@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ng-term.png" alt="ng-term logo" width="440">
+</p>
+
 # ng-term
 
 > **THIS PROJECT IS NOT A CLONE OF eDEX-UI. IT IS AN INDEPENDENT PROJECT INSPIRED BY eDEX-UI.**
