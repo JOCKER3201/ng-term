@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ng-term
+GenericName=Terminal Emulator
+Comment=Sci-fi terminal in the style of eDEX-UI (Rust + Vulkan)
+Comment[pl]=Terminal sci-fi w stylu eDEX-UI (Rust + Vulkan)
+Exec=@BINDIR@/ng-term
+Icon=ng-term
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;edex;sci-fi;
+StartupWMClass=ng-term
