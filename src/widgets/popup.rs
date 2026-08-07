@@ -2,7 +2,7 @@
 //! current screen size). Auto-hides after a few seconds; any click on it
 //! dismisses it immediately.
 
-use super::Ctx;
+use super::{Ctx, Rect};
 use crate::font::FONT_UI;
 use std::time::Instant;
 
@@ -79,4 +79,100 @@ impl Popup {
             px * 0.05,
         );
     }
+}
+
+/// OK button rectangle of the resolution dialog — geometry shared by
+/// drawing and hit-testing in main.
+pub fn resolution_dialog_ok_rect(w: f32, h: f32) -> Rect {
+    let bw = (w * 0.22).max(90.0);
+    let bh = h * 0.17;
+    Rect::new((w - bw) / 2.0, h * 0.66, bw, bh)
+}
+
+/// Content of the standalone resolution dialog window, shown INSTEAD of
+/// the program when the monitor resolution is below the minimum.
+pub fn draw_resolution_dialog(ctx: &mut Ctx, mw: u32, mh: u32) {
+    let base = ctx.theme.base;
+    let (w, h) = (ctx.w, ctx.h);
+    ctx.dl.rect(0.0, 0.0, w, h, ctx.theme.bg);
+    ctx.dl.chamfer_frame(
+        ctx.vw(1.2),
+        ctx.vh(4.0),
+        w - ctx.vw(2.4),
+        h - ctx.vh(8.0),
+        ctx.vh(4.0),
+        ctx.vh(0.7).max(1.5),
+        base.alpha(0.8),
+    );
+
+    let title_px = ctx.vh(7.5).max(10.0);
+    ctx.dl.text_center(
+        ctx.fonts,
+        FONT_UI,
+        title_px,
+        w / 2.0,
+        ctx.vh(13.0),
+        "WARNING",
+        base.alpha(0.6),
+        title_px * 0.2,
+    );
+    let px = ctx.vh(8.5).max(12.0);
+    ctx.dl.text_center(
+        ctx.fonts,
+        FONT_UI,
+        px,
+        w / 2.0,
+        ctx.vh(29.0),
+        &format!("Monitor resolution {mw}x{mh} is too small"),
+        base,
+        px * 0.05,
+    );
+    ctx.dl.text_center(
+        ctx.fonts,
+        FONT_UI,
+        px,
+        w / 2.0,
+        ctx.vh(44.0),
+        "ng-term requires a resolution of at least 1280x720",
+        base,
+        px * 0.05,
+    );
+
+    // OK button — a parallelogram like the control panel buttons.
+    let br = resolution_dialog_ok_rect(w, h);
+    let hover = br.contains(ctx.mouse.0, ctx.mouse.1);
+    let skew = br.h * 0.7;
+    let fill = if hover { base.alpha(0.22) } else { ctx.theme.bg };
+    ctx.dl.quad(
+        [
+            [br.x + skew, br.y],
+            [br.right(), br.y],
+            [br.right() - skew, br.bottom()],
+            [br.x, br.bottom()],
+        ],
+        fill,
+    );
+    ctx.dl.polyline(
+        &[
+            [br.x + skew, br.y],
+            [br.right(), br.y],
+            [br.right() - skew, br.bottom()],
+            [br.x, br.bottom()],
+        ],
+        1.0,
+        base.alpha(if hover { 0.8 } else { 0.4 }),
+        true,
+    );
+    let bpx = ctx.vh(7.0).max(10.0);
+    let color = if hover { base } else { base.alpha(0.7) };
+    ctx.dl.text_center(
+        ctx.fonts,
+        FONT_UI,
+        bpx,
+        br.cx(),
+        br.y + (br.h - bpx * 1.3) / 2.0,
+        "OK",
+        color,
+        bpx * 0.1,
+    );
 }

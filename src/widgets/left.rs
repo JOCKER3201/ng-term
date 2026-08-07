@@ -20,15 +20,56 @@ pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
     );
 
     // Column split into modules (fractions of the column height).
+    draw_slots(
+        ctx,
+        col,
+        snap,
+        &[
+            (0.12, clock),
+            (0.08, sysinfo),
+            (0.135, hardware),
+            (0.26, cpu),
+            (0.195, memory),
+            (0.21, toplist),
+        ],
+    );
+}
+
+/// Portrait variant of the column: without MEMORY and TOP PROCESSES —
+/// those move under the control panel (draw_mem_procs).
+pub fn draw_top(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
+    let title_px = ctx.font_px(1.02);
+    ctx.dl.module_title(
+        ctx.fonts,
+        col.x,
+        col.y - ctx.vh(1.8),
+        col.w,
+        title_px,
+        "SYSTEM",
+        &snap.hostname.to_uppercase(),
+        ctx.theme.base,
+    );
+    draw_slots(
+        ctx,
+        col,
+        snap,
+        &[(0.202, clock), (0.134, sysinfo), (0.227, hardware), (0.437, cpu)],
+    );
+}
+
+/// Portrait: MEMORY (with swap) + TOP PROCESSES, drawn in the free space
+/// under the control panel buttons.
+pub fn draw_mem_procs(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
+    draw_slots(ctx, col, snap, &[(0.48, memory), (0.52, toplist)]);
+}
+
+fn draw_slots(
+    ctx: &mut Ctx,
+    col: Rect,
+    snap: &Snapshot,
+    slots: &[(f32, fn(&mut Ctx, Rect, &Snapshot))],
+) {
     let gap = ctx.vh(1.2);
-    let slots: [(f32, fn(&mut Ctx, Rect, &Snapshot)); 6] = [
-        (0.12, clock),
-        (0.08, sysinfo),
-        (0.135, hardware),
-        (0.26, cpu),
-        (0.195, memory),
-        (0.21, toplist),
-    ];
     let usable = col.h - gap * (slots.len() as f32 - 1.0);
     let mut y = col.y;
     for (frac, f) in slots {

@@ -119,6 +119,26 @@ fn main() {
         }
         builder.build().expect("cannot create event loop")
     };
+
+    // Monitor resolution check (orientation-agnostic: a rotated 720x1280
+    // panel is fine). Below the minimum the program does NOT start — only
+    // a small dialog window with the message is shown.
+    let monitor_size = event_loop
+        .primary_monitor()
+        .or_else(|| event_loop.available_monitors().next())
+        .map(|m| m.size());
+    if let Some(s) = monitor_size {
+        let (long, short) = (s.width.max(s.height), s.width.min(s.height));
+        if long < 1280 || short < 720 {
+            eprintln!(
+                "ng-term: monitor resolution {}x{} is below the 1280x720 minimum",
+                s.width, s.height
+            );
+            run_resolution_dialog(event_loop, theme, fonts, s.width, s.height);
+            return;
+        }
+    }
+
     let window = WindowBuilder::new()
         .with_title("ng-term")
         .with_decorations(false)
@@ -127,6 +147,8 @@ fn main() {
         .with_fullscreen(Some(Fullscreen::Borderless(None)))
         .build(&event_loop)
         .expect("cannot create window");
+    // Minimum window size in landscape orientation.
+    window.set_min_inner_size(Some(winit::dpi::PhysicalSize::new(1280u32, 720u32)));
 
     let mut gfx = gfx::Gfx::new(&window);
 
@@ -506,7 +528,14 @@ fn main() {
                         let booting = widgets::boot::draw(&mut ctx);
                         if !booting {
                             let layout = flex::compute(w, h, &layout_spec);
-                            widgets::left::draw(&mut ctx, layout.left_col, &snap);
+                            // Portrait: MEMORY and TOP PROCESSES move out of
+                            // the telemetry column under the control panel.
+                            let portrait = h > w;
+                            if portrait {
+                                widgets::left::draw_top(&mut ctx, layout.left_col, &snap);
+                            } else {
+                                widgets::left::draw(&mut ctx, layout.left_col, &snap);
+                            }
                             widgets::right::draw(&mut ctx, layout.right_col, &snap);
 
                             let occupied: [bool; TAB_COUNT] =
@@ -522,6 +551,25 @@ fn main() {
                             fsp.draw(&mut ctx, layout.filesystem);
                             kb.draw(&mut ctx, layout.keyboard);
                             control.draw(&mut ctx, layout.control);
+                            // Portrait row: MEMORY + TOP PROCESSES fill the
+                            // column above the bottom-anchored control panel.
+                            // Only when the telemetry row is visible (the
+                            // phone control bar at the bottom is full-width).
+                            if portrait && layout.left_col.x < w {
+                                // Anchored to the row top (below the keyboard),
+                                // independent of the shifted column tops.
+                                let top = layout.keyboard.bottom() + ctx.vh(2.4);
+                                let free = layout.control.y - ctx.vh(2.4) - top;
+                                if free > ctx.vh(12.0) {
+                                    let r = widgets::Rect::new(
+                                        layout.control.x,
+                                        top,
+                                        layout.control.w,
+                                        free,
+                                    );
+                                    widgets::left::draw_mem_procs(&mut ctx, r, &snap);
+                                }
+                            }
                             // Settings window drawn on top.
                             settings.draw(&mut ctx);
                             // Warning popup on the very top.
@@ -538,6 +586,103 @@ fn main() {
                         }
 
                         // 4. Render.
+                        let atlas = if fonts.atlas_dirty {
+                            fonts.atlas_dirty = false;
+                            Some(fonts.atlas.clone())
+                        } else {
+                            None
+                        };
+                        gfx.render(
+                            &window,
+                            &dl.verts,
+                            atlas.as_deref(),
+                            [theme.bg.r, theme.bg.g, theme.bg.b, 1.0],
+                        );
+                    }
+                    _ => {}
+                },
+                Event::AboutToWait => {
+                    window.request_redraw();
+                }
+                _ => {}
+            }
+        })
+        .expect("event loop ended with an error");
+}
+
+/// A small dialog window shown INSTEAD of the program when the monitor
+/// resolution is below the 1280x720 minimum. OK, Enter/Escape or closing
+/// the window quits.
+fn run_resolution_dialog(
+    event_loop: winit::event_loop::EventLoop<()>,
+    theme: theme::Theme,
+    mut fonts: font::FontSystem,
+    mw: u32,
+    mh: u32,
+) {
+    let window = WindowBuilder::new()
+        .with_title("ng-term")
+        .with_inner_size(winit::dpi::LogicalSize::new(640.0, 200.0))
+        .with_resizable(false)
+        .build(&event_loop)
+        .expect("cannot create window");
+    let mut gfx = gfx::Gfx::new(&window);
+    let mut dl = draw::DrawList::new();
+    let mut mouse = (0.0f32, 0.0f32);
+
+    event_loop
+        .run(move |event, elwt| {
+            elwt.set_control_flow(ControlFlow::Wait);
+            match event {
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => elwt.exit(),
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        gfx.resize();
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        mouse = (position.x as f32, position.y as f32);
+                        window.request_redraw();
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        let size = window.inner_size();
+                        let ok = widgets::popup::resolution_dialog_ok_rect(
+                            size.width as f32,
+                            size.height as f32,
+                        );
+                        if ok.contains(mouse.0, mouse.1) {
+                            elwt.exit();
+                        }
+                    }
+                    WindowEvent::KeyboardInput { event: key_event, .. } => {
+                        if key_event.state == ElementState::Pressed
+                            && matches!(
+                                key_event.logical_key,
+                                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)
+                            )
+                        {
+                            elwt.exit();
+                        }
+                    }
+                    WindowEvent::RedrawRequested => {
+                        let size = window.inner_size();
+                        let (w, h) = (size.width as f32, size.height as f32);
+                        dl.clear();
+                        let mut ctx = widgets::Ctx {
+                            dl: &mut dl,
+                            fonts: &mut fonts,
+                            theme: &theme,
+                            w,
+                            h,
+                            t: 0.0,
+                            mouse,
+                            term_font_scale: 1.0,
+                            ui_font_scale: 1.0,
+                        };
+                        widgets::popup::draw_resolution_dialog(&mut ctx, mw, mh);
                         let atlas = if fonts.atlas_dirty {
                             fonts.atlas_dirty = false;
                             Some(fonts.atlas.clone())

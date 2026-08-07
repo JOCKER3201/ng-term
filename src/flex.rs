@@ -202,14 +202,22 @@ fn portrait(w: f32, h: f32) -> Layout {
         let cgap = (w * 0.01).max(4.0);
         let cw = (iw - 2.0 * cgap) / 3.2;
         let left_w = cw * 1.2;
+        // Left/middle columns start slightly lower, so their headers
+        // (drawn above the column) line up with the MEMORY title of the
+        // control column and all three columns span the same height.
+        let d = h * 0.03;
         let mut x = pad;
-        let left_col = Rect::new(x, y, left_w, row_h);
+        let left_col = Rect::new(x, y + d, left_w, row_h - d);
         x += left_w + cgap;
-        let right_col = Rect::new(x, y, cw, row_h);
-        let fs_y = y + h * 0.09;
-        let filesystem = Rect::new(x, fs_y, cw, row_h - (fs_y - y));
+        let right_col = Rect::new(x, y + d, cw, row_h - d);
+        let fs_y = y + d + h * 0.09;
+        let filesystem = Rect::new(x, fs_y, cw, y + row_h - fs_y);
         x += cw + cgap;
-        let control = Rect::new(x, y, (w - pad - x).max(60.0), row_h);
+        // The control panel sits at the very bottom of its column; the
+        // space above it takes MEMORY + TOP PROCESSES (drawn in main).
+        let ctl_h = h * 0.135;
+        let control =
+            Rect::new(x, y + row_h - ctl_h, (w - pad - x).max(60.0), ctl_h);
         Layout { shell, keyboard, left_col, right_col, filesystem, control }
     } else {
         let control = Rect::new(pad, y, iw, ctl_h);
