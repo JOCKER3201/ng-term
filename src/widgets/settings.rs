@@ -16,6 +16,7 @@ enum View {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Act {
+    Close,
     Back,
     OpenThemes,
     Theme(usize),
@@ -70,14 +71,15 @@ impl Settings {
             return None;
         }
         if !modal_rect(w, h).contains(x, y) {
-            // Clicking outside the window closes the settings.
-            self.open = false;
+            // Clicks outside the window are swallowed; closing is done
+            // with the CLOSE button (or ESC), not by clicking outside.
             return None;
         }
         let act = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|&(_, a)| a);
         if let Some(act) = act {
             self.flash = Some((act, Instant::now()));
             match act {
+                Act::Close => self.open = false,
                 Act::OpenThemes => {
                     // Themes are scanned when the THEMES view is opened.
                     self.themes = config::list_themes();
@@ -140,9 +142,22 @@ impl Settings {
 
         match self.view {
             View::Menu => {
-                // The only entry: THEMES.
+                // Close button in the top left of the main view.
+                let close_w = (content.w * 0.22).max(70.0);
+                self.button(
+                    ctx,
+                    Rect::new(content.x, content.y, close_w, btn_h),
+                    "CLOSE",
+                    Act::Close,
+                );
+                // Menu entry: THEMES.
                 let bw = content.w * 0.6;
-                let br = Rect::new(content.x + (content.w - bw) / 2.0, content.y, bw, btn_h);
+                let br = Rect::new(
+                    content.x + (content.w - bw) / 2.0,
+                    content.y + btn_h + gap,
+                    bw,
+                    btn_h,
+                );
                 self.button(ctx, br, "THEMES", Act::OpenThemes);
             }
             View::Themes => {

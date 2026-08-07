@@ -1,11 +1,16 @@
 //! User configuration: ~/.config/ng-term
 //!
 //! Structure:
-//!   ~/.config/ng-term/ng-term.conf     — main configuration file (Key=Value)
-//!   ~/.config/ng-term/themes/<theme>/  — theme directories, each containing:
+//!   ~/.config/ng-term/ng-term.conf         — main configuration file (Key=Value)
+//!   ~/.config/ng-term/themes/style/        — shared style files (*.css)
+//!   ~/.config/ng-term/themes/layauts/      — shared layout files (*.layaut)
+//!   ~/.config/ng-term/themes/look/<theme>/ — complete themes, each containing:
 //!       meta        — metafile with a Name= field (name used in ng-term.conf)
-//!       *.css       — style (colors)
-//!       *.layaut    — panel layout (vw/vh units)
+//!       *.css       — symlink into themes/style/
+//!       *.layaut    — symlink into themes/layauts/
+//!
+//! Complete themes hold only symlinks, so styles and layouts shared by
+//! several themes exist on disk once (no duplicates).
 //!
 //! In ng-term.conf the Themes=<name> option picks a theme by the metafile's
 //! Name= field. Empty value or missing option = default theme built into the code.
@@ -28,9 +33,29 @@ pub struct ThemeInfo {
     pub dir: PathBuf,
 }
 
-/// Scans the themes directory; returns entries with a valid metafile (Name=).
+/// Built-in theme palettes — colors of all default eDEX-UI themes.
+/// (name, r, g, b, background, grey, terminal fg, terminal bg, cursor)
+const BUILTIN_THEMES: [(&str, u8, u8, u8, &str, &str, &str, &str, &str); 10] = [
+    ("apollo", 235, 235, 235, "#191919", "#262827", "#ebebeb", "#191919", "#ebebeb"),
+    ("blade", 204, 94, 55, "#090B0A", "#262827", "#cc5e37", "#090B0A", "#cc5e37"),
+    ("chalkboard", 239, 240, 235, "#222430", "#222430", "#eff0eb", "#282a36", "#97979b"),
+    ("cyborg", 95, 215, 215, "#0a3333", "#034747", "#a3c2c2", "#0a3333", "#5cffff"),
+    ("interstellar", 3, 169, 244, "#dedede", "#bfbfbf", "#03A9F4", "#dedede", "#03A9F4"),
+    ("matrix", 0, 143, 17, "#090B0A", "#262827", "#00ff41", "#0D0208", "#00ff41"),
+    ("navy", 20, 119, 205, "#222430", "#222430", "#87b7cc", "#222430", "#87b7cc"),
+    ("nord", 216, 222, 233, "#2E3440", "#4c566a", "#D8DEE9", "#2E3440", "#D8DEE9"),
+    ("red", 204, 0, 34, "#090B0A", "#0f2e3d", "#cc0022", "#090B0A", "#cc0022"),
+    ("tron", 170, 207, 209, "#05080d", "#262828", "#aacfd1", "#05080d", "#aacfd1"),
+];
+
+/// Directory with complete themes: ~/.config/ng-term/themes/look
+fn look_dir() -> PathBuf {
+    config_dir().join("themes").join("look")
+}
+
+/// Scans the themes/look directory; returns entries with a valid metafile (Name=).
 pub fn list_themes() -> Vec<ThemeInfo> {
-    let dir = config_dir().join("themes");
+    let dir = look_dir();
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for entry in rd.flatten() {
@@ -64,11 +89,11 @@ pub fn load() -> Config {
         .unwrap_or_default();
 
     if !theme_name.is_empty() {
-        match load_theme(&dir.join("themes"), &theme_name) {
+        match load_theme(&look_dir(), &theme_name) {
             Some(cfg) => return cfg,
             None => eprintln!(
                 "ng-term: theme '{theme_name}' not found in {} — using the default",
-                dir.join("themes").display()
+                look_dir().display()
             ),
         }
     }
@@ -86,7 +111,7 @@ pub fn shellrc_path() -> PathBuf {
 
 /// Loads the theme with the given name (metafile Name= field).
 pub fn load_theme_by_name(name: &str) -> Option<Config> {
-    load_theme(&config_dir().join("themes"), name)
+    load_theme(&look_dir(), name)
 }
 
 /// Current Themes= value from ng-term.conf (if non-empty).
@@ -139,14 +164,19 @@ fn config_dir() -> PathBuf {
     PathBuf::from(home).join(".config").join("ng-term")
 }
 
-/// Creates the config directory, the ng-term.conf file, the themes directory
-/// and (on first run) the sample "tron" theme.
+/// Creates the config directory, the ng-term.conf file, the themes tree
+/// (look/, style/, layauts/) and (on first run) the sample "tron" theme.
 fn init_tree(dir: &Path) {
     let themes = dir.join("themes");
     let themes_existed = themes.is_dir();
-    if let Err(e) = std::fs::create_dir_all(&themes) {
-        eprintln!("ng-term: cannot create {}: {e}", themes.display());
-        return;
+    let look = themes.join("look");
+    let style = themes.join("style");
+    let layauts = themes.join("layauts");
+    for d in [&look, &style, &layauts] {
+        if let Err(e) = std::fs::create_dir_all(d) {
+            eprintln!("ng-term: cannot create {}: {e}", d.display());
+            return;
+        }
     }
 
     let conf = dir.join("ng-term.conf");
@@ -184,41 +214,56 @@ fn init_tree(dir: &Path) {
         );
     }
 
-    // The sample theme is created only when themes/ is first created.
+    // Built-in themes are created only when themes/ is first created.
     if !themes_existed {
-        let tron = themes.join("tron");
-        if std::fs::create_dir_all(&tron).is_ok() {
+        let _ = std::fs::write(
+            layauts.join("default.layaut"),
+            "# ng-term panel layout: panel = x y width height\n\
+             # Units: vw (percent of window width), vh (percent of height).\n\
+             left_col   = 0.6vw  2.5vh  16.4vw 59.5vh\n\
+             shell      = 17.5vw 2.5vh  65.0vw 60.3vh\n\
+             right_col  = 83.0vw 2.5vh  16.4vw 59.5vh\n\
+             filesystem = 83.0vw 17.4vh 16.4vw 79.6vh\n\
+             keyboard   = 17.5vw 64.5vh 65.0vw 32.5vh\n\
+             control    = 0.6vw  64.5vh 16.4vw 32.5vh\n",
+        );
+        for (name, r, g, b, bg, grey, fg, tbg, cur) in BUILTIN_THEMES {
             let _ = std::fs::write(
-                tron.join("meta"),
-                "Name=tron\nDescription=Default ng-term theme (eDEX-UI tron)\n",
+                style.join(format!("{name}.css")),
+                format!(
+                    "/* Colors from the original eDEX-UI theme: {name} */\n\
+                     :root {{\n\
+                     \x20   --color-r: {r};\n\
+                     \x20   --color-g: {g};\n\
+                     \x20   --color-b: {b};\n\
+                     \x20   --background: {bg};\n\
+                     \x20   --grey: {grey};\n\
+                     }}\n\
+                     terminal {{\n\
+                     \x20   foreground: {fg};\n\
+                     \x20   background: {tbg};\n\
+                     \x20   cursor: {cur};\n\
+                     }}\n"
+                ),
             );
-            let _ = std::fs::write(
-                tron.join("tron.css"),
-                "/* ng-term theme style — colors in #rrggbb format */\n\
-                 :root {\n\
-                 \x20   --color-r: 170;\n\
-                 \x20   --color-g: 207;\n\
-                 \x20   --color-b: 209;\n\
-                 \x20   --background: #05080d;\n\
-                 \x20   --grey: #262828;\n\
-                 }\n\
-                 terminal {\n\
-                 \x20   foreground: #aacfd1;\n\
-                 \x20   background: #05080d;\n\
-                 \x20   cursor: #aacfd1;\n\
-                 }\n",
-            );
-            let _ = std::fs::write(
-                tron.join("tron.layaut"),
-                "# ng-term panel layout: panel = x y width height\n\
-                 # Units: vw (percent of window width), vh (percent of height).\n\
-                 left_col   = 0.6vw  2.5vh  16.4vw 59.5vh\n\
-                 shell      = 17.5vw 2.5vh  65.0vw 60.3vh\n\
-                 right_col  = 83.0vw 2.5vh  16.4vw 59.5vh\n\
-                 filesystem = 83.0vw 17.4vh 16.4vw 79.6vh\n\
-                 keyboard   = 17.5vw 64.5vh 65.0vw 32.5vh\n\
-                 control    = 0.6vw  64.5vh 16.4vw 32.5vh\n",
-            );
+            let dir = look.join(name);
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let _ = std::fs::write(
+                    dir.join("meta"),
+                    format!(
+                        "Name={name}\nDescription=eDEX-UI '{name}' theme (original colors)\n"
+                    ),
+                );
+                // A complete theme holds only symlinks to the shared files.
+                let _ = std::os::unix::fs::symlink(
+                    format!("../../style/{name}.css"),
+                    dir.join(format!("{name}.css")),
+                );
+                let _ = std::os::unix::fs::symlink(
+                    "../../layauts/default.layaut",
+                    dir.join(format!("{name}.layaut")),
+                );
+            }
         }
     }
 }
