@@ -1,6 +1,7 @@
-//! Modal settings window (centered). The main view contains the THEMES
-//! entry; clicking it shows a back button in the top left and, next to it
-//! and below, the list of themes scanned from ~/.config/ng-term/themes.
+//! Modal settings window (centered). Main view: CLOSE + THEMES. The THEMES
+//! view is a submenu with LOOK (complete themes), STYLES (color styles from
+//! themes/style) and LAYAUTS (layouts from themes/layauts). Selections are
+//! written to ng-term.conf (Look= / Style= / Layaut=) and applied live.
 
 use super::{Ctx, Rect};
 use crate::config::{self, ThemeInfo};
@@ -12,6 +13,9 @@ use std::time::Instant;
 enum View {
     Menu,
     Themes,
+    Look,
+    Styles,
+    Layauts,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -19,15 +23,24 @@ enum Act {
     Close,
     Back,
     OpenThemes,
-    Theme(usize),
+    OpenLook,
+    OpenStyles,
+    OpenLayauts,
+    Look(usize),
+    Style(usize),
+    Layaut(usize),
 }
 
 pub struct Settings {
     pub open: bool,
     view: View,
-    themes: Vec<ThemeInfo>,
-    /// Name of the currently set theme (highlighted in the list).
-    current: Option<String>,
+    looks: Vec<ThemeInfo>,
+    styles: Vec<String>,
+    layauts: Vec<String>,
+    /// Current selections from ng-term.conf (highlighted in the lists).
+    current_look: Option<String>,
+    current_style: Option<String>,
+    current_layaut: Option<String>,
     hits: Vec<(Rect, Act)>,
     flash: Option<(Act, Instant)>,
 }
@@ -44,8 +57,12 @@ impl Settings {
         Settings {
             open: false,
             view: View::Menu,
-            themes: Vec::new(),
-            current: None,
+            looks: Vec::new(),
+            styles: Vec::new(),
+            layauts: Vec::new(),
+            current_look: None,
+            current_style: None,
+            current_layaut: None,
             hits: Vec::new(),
             flash: None,
         }
@@ -65,37 +82,92 @@ impl Settings {
         self.hits.iter().any(|(r, _)| r.contains(x, y))
     }
 
-    /// Click handling. Returns the theme name if one was selected.
-    pub fn click(&mut self, x: f32, y: f32, w: f32, h: f32) -> Option<String> {
+    /// Click handling. Returns true when the configuration changed
+    /// (the caller should re-resolve and apply it).
+    pub fn click(&mut self, x: f32, y: f32, w: f32, h: f32) -> bool {
         if !self.open {
-            return None;
+            return false;
         }
         if !modal_rect(w, h).contains(x, y) {
             // Clicks outside the window are swallowed; closing is done
             // with the CLOSE button (or ESC), not by clicking outside.
-            return None;
+            return false;
         }
         let act = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|&(_, a)| a);
-        if let Some(act) = act {
-            self.flash = Some((act, Instant::now()));
-            match act {
-                Act::Close => self.open = false,
-                Act::OpenThemes => {
-                    // Themes are scanned when the THEMES view is opened.
-                    self.themes = config::list_themes();
-                    self.current = config::current_theme_name();
-                    self.view = View::Themes;
+        let Some(act) = act else { return false };
+        self.flash = Some((act, Instant::now()));
+        match act {
+            Act::Close => self.open = false,
+            Act::Back => {
+                self.view = match self.view {
+                    View::Look | View::Styles | View::Layauts => View::Themes,
+                    _ => View::Menu,
                 }
-                Act::Back => self.view = View::Menu,
-                Act::Theme(i) => {
-                    if let Some(info) = self.themes.get(i) {
-                        self.current = Some(info.name.clone());
-                        return Some(info.name.clone());
+            }
+            Act::OpenThemes => self.view = View::Themes,
+            Act::OpenLook => {
+                // Scanned when the view is opened.
+                self.looks = config::list_themes();
+                self.refresh_current();
+                self.view = View::Look;
+            }
+            Act::OpenStyles => {
+                self.styles = config::list_styles();
+                self.refresh_current();
+                self.view = View::Styles;
+            }
+            Act::OpenLayauts => {
+                self.layauts = config::list_layauts();
+                self.refresh_current();
+                self.view = View::Layauts;
+            }
+            Act::Look(i) => {
+                // A look replaces everything: Style= and Layaut= are cleared.
+                if let Some(info) = self.looks.get(i) {
+                    config::set_theme_option(&info.name);
+                    config::clear_component_options();
+                    self.refresh_current();
+                    return true;
+                }
+            }
+            Act::Style(i) => {
+                // A component clears Look=; the missing other component
+                // is automatically set to "default".
+                if let Some(name) = self.styles.get(i).cloned() {
+                    config::set_style_option(&name);
+                    if config::current_layaut_name().is_none() {
+                        config::set_layaut_option("default");
                     }
+                    config::clear_look_option();
+                    config::canonicalize_components();
+                    self.refresh_current();
+                    return true;
+                }
+            }
+            Act::Layaut(i) => {
+                if let Some(name) = self.layauts.get(i).cloned() {
+                    config::set_layaut_option(&name);
+                    if config::current_style_name().is_none() {
+                        config::set_style_option("default");
+                    }
+                    config::clear_look_option();
+                    config::canonicalize_components();
+                    self.refresh_current();
+                    return true;
                 }
             }
         }
-        None
+        false
+    }
+
+    /// Refreshes the selection highlights: the look from Look= and the
+    /// effective style/layaut components (a selected look also marks the
+    /// components it is composed of).
+    fn refresh_current(&mut self) {
+        self.current_look = config::current_theme_name();
+        let (style, layaut) = config::effective_components();
+        self.current_style = style;
+        self.current_layaut = layaut;
     }
 
     pub fn draw(&mut self, ctx: &mut Ctx) {
@@ -119,6 +191,9 @@ impl Settings {
         let title = match self.view {
             View::Menu => "SETTINGS",
             View::Themes => "SETTINGS \u{2014} THEMES",
+            View::Look => "SETTINGS \u{2014} LOOK",
+            View::Styles => "SETTINGS \u{2014} STYLES",
+            View::Layauts => "SETTINGS \u{2014} LAYAUTS",
         };
         ctx.dl.module_title(
             ctx.fonts,
@@ -139,67 +214,131 @@ impl Settings {
         );
         let btn_h = ctx.vh(4.2);
         let gap = ctx.vh(1.2);
+        let corner_w = (content.w * 0.22).max(70.0);
 
         match self.view {
             View::Menu => {
                 // Close button in the top left of the main view.
-                let close_w = (content.w * 0.22).max(70.0);
                 self.button(
                     ctx,
-                    Rect::new(content.x, content.y, close_w, btn_h),
+                    Rect::new(content.x, content.y, corner_w, btn_h),
                     "CLOSE",
                     Act::Close,
                 );
                 // Menu entry: THEMES.
                 let bw = content.w * 0.6;
-                let br = Rect::new(
-                    content.x + (content.w - bw) / 2.0,
-                    content.y + btn_h + gap,
-                    bw,
-                    btn_h,
+                self.button(
+                    ctx,
+                    Rect::new(
+                        content.x + (content.w - bw) / 2.0,
+                        content.y + btn_h + gap,
+                        bw,
+                        btn_h,
+                    ),
+                    "THEMES",
+                    Act::OpenThemes,
                 );
-                self.button(ctx, br, "THEMES", Act::OpenThemes);
             }
             View::Themes => {
-                // Back button in the top left.
-                let back_w = (content.w * 0.22).max(70.0);
-                let back_r = Rect::new(content.x, content.y, back_w, btn_h);
-                self.button(ctx, back_r, "BACK", Act::Back);
-
-                // Themes: next to the back button and below, in rows.
-                let cols = 3usize;
-                let bw = (content.w - gap * (cols as f32 - 1.0)) / cols as f32;
-                let mut col = 1usize; // the first row starts next to BACK
-                let mut y = content.y;
-                let names: Vec<String> =
-                    self.themes.iter().map(|t| t.name.to_uppercase()).collect();
-                for (i, name) in names.iter().enumerate() {
-                    if col >= cols {
-                        col = 0;
-                        y += btn_h + gap;
-                    }
-                    if y + btn_h > content.bottom() {
-                        break;
-                    }
-                    let br = Rect::new(content.x + col as f32 * (bw + gap), y, bw, btn_h);
-                    self.button(ctx, br, name, Act::Theme(i));
-                    col += 1;
-                }
-                if self.themes.is_empty() {
-                    let px = ctx.font_px(1.0);
-                    ctx.dl.text_center(
-                        ctx.fonts,
-                        FONT_UI,
-                        px,
-                        content.cx(),
-                        content.y + btn_h + gap,
-                        "NO THEMES FOUND",
-                        base.alpha(0.5),
-                        px * 0.1,
-                    );
+                // Submenu: LOOK / STYLES / LAYAUTS.
+                self.button(
+                    ctx,
+                    Rect::new(content.x, content.y, corner_w, btn_h),
+                    "BACK",
+                    Act::Back,
+                );
+                let bw = content.w * 0.6;
+                let bx = content.x + (content.w - bw) / 2.0;
+                let entries = [
+                    ("LOOK", Act::OpenLook),
+                    ("STYLES", Act::OpenStyles),
+                    ("LAYAUTS", Act::OpenLayauts),
+                ];
+                for (i, (label, act)) in entries.into_iter().enumerate() {
+                    let y = content.y + (btn_h + gap) * (i as f32 + 1.0);
+                    self.button(ctx, Rect::new(bx, y, bw, btn_h), label, act);
                 }
             }
+            View::Look => {
+                let names: Vec<String> =
+                    self.looks.iter().map(|t| t.name.clone()).collect();
+                self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Look);
+                self.empty_note(ctx, content, btn_h, gap, &names, "NO LOOKS FOUND");
+            }
+            View::Styles => {
+                let names = self.styles.clone();
+                self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Style);
+                self.empty_note(ctx, content, btn_h, gap, &names, "NO STYLES FOUND");
+            }
+            View::Layauts => {
+                let names = self.layauts.clone();
+                self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Layaut);
+                self.empty_note(ctx, content, btn_h, gap, &names, "NO LAYAUTS FOUND");
+            }
         }
+    }
+
+    /// BACK button + items next to it and below, in rows.
+    #[allow(clippy::too_many_arguments)]
+    fn item_grid(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        btn_h: f32,
+        gap: f32,
+        corner_w: f32,
+        names: &[String],
+        make_act: fn(usize) -> Act,
+    ) {
+        let _ = corner_w;
+        self.button(
+            ctx,
+            Rect::new(content.x, content.y, (content.w * 0.22).max(70.0), btn_h),
+            "BACK",
+            Act::Back,
+        );
+        let cols = 3usize;
+        let bw = (content.w - gap * (cols as f32 - 1.0)) / cols as f32;
+        let mut col = 1usize; // the first row starts next to BACK
+        let mut y = content.y;
+        for (i, name) in names.iter().enumerate() {
+            if col >= cols {
+                col = 0;
+                y += btn_h + gap;
+            }
+            if y + btn_h > content.bottom() {
+                break;
+            }
+            let br = Rect::new(content.x + col as f32 * (bw + gap), y, bw, btn_h);
+            let label = name.to_uppercase();
+            self.button(ctx, br, &label, make_act(i));
+            col += 1;
+        }
+    }
+
+    fn empty_note(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        btn_h: f32,
+        gap: f32,
+        names: &[String],
+        note: &str,
+    ) {
+        if !names.is_empty() {
+            return;
+        }
+        let px = ctx.font_px(1.0);
+        ctx.dl.text_center(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.cx(),
+            content.y + btn_h + gap,
+            note,
+            ctx.theme.base.alpha(0.5),
+            px * 0.1,
+        );
     }
 
     /// Button in the terminal-tab style (slant, hover, flash on click).
@@ -210,10 +349,19 @@ impl Settings {
             .flash
             .map(|(a, t)| a == act && t.elapsed().as_secs_f32() < 0.15)
             .unwrap_or(false);
-        // The currently set theme is highlighted like an active tab.
+        // The currently selected item is highlighted like an active tab.
         let is_current = match act {
-            Act::Theme(i) => {
-                self.themes.get(i).map(|t| Some(&t.name) == self.current.as_ref()) == Some(true)
+            Act::Look(i) => {
+                self.looks.get(i).map(|t| Some(&t.name) == self.current_look.as_ref())
+                    == Some(true)
+            }
+            Act::Style(i) => {
+                self.styles.get(i).map(|s| Some(s) == self.current_style.as_ref())
+                    == Some(true)
+            }
+            Act::Layaut(i) => {
+                self.layauts.get(i).map(|s| Some(s) == self.current_layaut.as_ref())
+                    == Some(true)
             }
             _ => false,
         };

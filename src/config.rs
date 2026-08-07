@@ -12,8 +12,10 @@
 //! Complete themes hold only symlinks, so styles and layouts shared by
 //! several themes exist on disk once (no duplicates).
 //!
-//! In ng-term.conf the Themes=<name> option picks a theme by the metafile's
-//! Name= field. Empty value or missing option = default theme built into the code.
+//! In ng-term.conf the Look=<name> option picks a complete theme by the
+//! metafile's Name= field. The Style= and Layaut= options name files from
+//! themes/style and themes/layauts (without extensions). Empty values or
+//! missing options = defaults built into the code.
 
 use crate::theme::{Color, Theme};
 use crate::widgets::{LayoutSpec, PanelSpec};
@@ -77,26 +79,69 @@ pub fn list_themes() -> Vec<ThemeInfo> {
 }
 
 pub fn load() -> Config {
-    let dir = config_dir();
-    init_tree(&dir);
+    init_tree(&config_dir());
+    resolve()
+}
 
-    let conf_text = std::fs::read_to_string(dir.join("ng-term.conf")).unwrap_or_default();
-    let kv = parse_kv(&conf_text);
-    let theme_name = kv
-        .get("Themes")
-        .or_else(|| kv.get("Theme"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
-    if !theme_name.is_empty() {
-        match load_theme(&look_dir(), &theme_name) {
-            Some(cfg) => return cfg,
+/// Resolves the effective configuration from ng-term.conf:
+/// - a valid Look= always wins; Style= and Layaut= are then cleared
+///   in the file so only the look remains,
+/// - otherwise Style=/Layaut= are used; a missing component falls back
+///   to "default" (default.css has the tron colors),
+/// - nothing set -> the built-in default.
+pub fn resolve() -> Config {
+    // A valid look wins and clears the component options.
+    if let Some(name) = current_theme_name() {
+        match load_theme(&look_dir(), &name) {
+            Some(cfg) => {
+                if current_style_name().is_some() || current_layaut_name().is_some() {
+                    clear_component_options();
+                }
+                return cfg;
+            }
             None => eprintln!(
-                "ng-term: theme '{theme_name}' not found in {} — using the default",
+                "ng-term: theme '{name}' not found in {}",
                 look_dir().display()
             ),
         }
     }
+
+    // Component mode: an empty component falls back to "default".
+    let style_name = current_style_name();
+    let layaut_name = current_layaut_name();
+    if style_name.is_some() || layaut_name.is_some() {
+        let sname = style_name.unwrap_or_else(|| "default".into());
+        let lname = layaut_name.unwrap_or_else(|| "default".into());
+
+        // If the pair matches a look's components, the file is rewritten
+        // to that look (components cleared) and the look is loaded.
+        if let Some(look_name) = canonicalize_components() {
+            if let Some(cfg) = load_theme(&look_dir(), &look_name) {
+                return cfg;
+            }
+        }
+        let sp = style_dir().join(format!("{sname}.css"));
+        let lp = layauts_dir().join(format!("{lname}.layaut"));
+        let theme = match std::fs::read_to_string(&sp) {
+            Ok(s) => parse_css(&s),
+            Err(_) => {
+                eprintln!("ng-term: style '{sname}' not found in {}", style_dir().display());
+                Theme::load()
+            }
+        };
+        let layout = match std::fs::read_to_string(&lp) {
+            Ok(s) => parse_layaut(&s),
+            Err(_) => {
+                eprintln!(
+                    "ng-term: layaut '{lname}' not found in {}",
+                    layauts_dir().display()
+                );
+                LayoutSpec::default()
+            }
+        };
+        return Config { theme, layout };
+    }
+
     // Default theme (hardcoded; Theme::load also honors NGTERM_THEME).
     Config {
         theme: Theme::load(),
@@ -104,29 +149,184 @@ pub fn load() -> Config {
     }
 }
 
+/// Clears the Style= and Layaut= options (a complete look was selected).
+pub fn clear_component_options() {
+    set_conf_kv("Style", "");
+    set_conf_kv("Layaut", "");
+}
+
+/// Style/layaut component names a look is composed of (from its symlinks).
+fn look_components(dir: &Path) -> (Option<String>, Option<String>) {
+    let mut style = None;
+    let mut layaut = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase());
+            // Only symlinks count: a look composed of shared components.
+            let Ok(target) = std::fs::read_link(&p) else { continue };
+            let stem = target
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            match ext.as_deref() {
+                Some("css") => style = stem,
+                Some("layaut") => layaut = stem,
+                _ => {}
+            }
+        }
+    }
+    (style, layaut)
+}
+
+/// Finds a look whose components are exactly (style, layaut).
+fn find_matching_look(style: &str, layaut: &str) -> Option<String> {
+    for info in list_themes() {
+        let (s, l) = look_components(&info.dir);
+        if s.as_deref() == Some(style) && l.as_deref() == Some(layaut) {
+            return Some(info.name);
+        }
+    }
+    None
+}
+
+/// Effective component names (style, layaut) implied by the current
+/// configuration — for a selected look these are its symlink targets,
+/// in component mode the Style=/Layaut= values (missing one falls back
+/// to "default"), and with nothing set the "default"/"default" pair.
+pub fn effective_components() -> (Option<String>, Option<String>) {
+    if let Some(name) = current_theme_name() {
+        if let Some(info) = list_themes().into_iter().find(|t| t.name == name) {
+            return look_components(&info.dir);
+        }
+        return (None, None);
+    }
+    let s = current_style_name();
+    let l = current_layaut_name();
+    if s.is_none() && l.is_none() {
+        return (Some("default".into()), Some("default".into()));
+    }
+    (
+        Some(s.unwrap_or_else(|| "default".into())),
+        Some(l.unwrap_or_else(|| "default".into())),
+    )
+}
+
+/// If the effective Style=/Layaut= pair (missing one falls back to
+/// "default") matches some look, rewrites ng-term.conf so that only
+/// Look= is set and returns the look name.
+pub fn canonicalize_components() -> Option<String> {
+    if current_theme_name().is_some() {
+        return None;
+    }
+    let style_set = current_style_name();
+    let layaut_set = current_layaut_name();
+    if style_set.is_none() && layaut_set.is_none() {
+        return None;
+    }
+    let s = style_set.unwrap_or_else(|| "default".into());
+    let l = layaut_set.unwrap_or_else(|| "default".into());
+    let look = find_matching_look(&s, &l)?;
+    set_theme_option(&look);
+    clear_component_options();
+    Some(look)
+}
+
+/// Clears the Look= option (a component was selected).
+pub fn clear_look_option() {
+    set_conf_kv("Look", "");
+}
+
 /// Path of the bash startup file generated by ng-term.
 pub fn shellrc_path() -> PathBuf {
     config_dir().join("shellrc")
 }
 
-/// Loads the theme with the given name (metafile Name= field).
-pub fn load_theme_by_name(name: &str) -> Option<Config> {
-    load_theme(&look_dir(), name)
-}
-
-/// Current Themes= value from ng-term.conf (if non-empty).
+/// Current Look= value from ng-term.conf (if non-empty).
 pub fn current_theme_name() -> Option<String> {
     let text = std::fs::read_to_string(config_dir().join("ng-term.conf")).ok()?;
     let kv = parse_kv(&text);
-    kv.get("Themes")
-        .or_else(|| kv.get("Theme"))
+    kv.get("Look")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
-/// Saves the theme choice to ng-term.conf, preserving the rest of the file.
+/// Saves the look choice to ng-term.conf, preserving the rest of the file.
 pub fn set_theme_option(name: &str) {
-    set_conf_kv("Themes", name);
+    set_conf_kv("Look", name);
+}
+
+fn conf_kv() -> HashMap<String, String> {
+    parse_kv(&std::fs::read_to_string(config_dir().join("ng-term.conf")).unwrap_or_default())
+}
+
+/// Directory with shared styles: ~/.config/ng-term/themes/style
+fn style_dir() -> PathBuf {
+    config_dir().join("themes").join("style")
+}
+
+/// Directory with shared layouts: ~/.config/ng-term/themes/layauts
+fn layauts_dir() -> PathBuf {
+    config_dir().join("themes").join("layauts")
+}
+
+/// File stems (no extension) of files with the given extension in a directory.
+fn list_stems(dir: &Path, ext: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let matches = p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case(ext))
+                    .unwrap_or(false);
+            if matches {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    out.push(stem.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Style names available in themes/style (no extensions).
+pub fn list_styles() -> Vec<String> {
+    list_stems(&style_dir(), "css")
+}
+
+/// Layout names available in themes/layauts (no extensions).
+pub fn list_layauts() -> Vec<String> {
+    list_stems(&layauts_dir(), "layaut")
+}
+
+/// Current Style= value from ng-term.conf (if non-empty).
+pub fn current_style_name() -> Option<String> {
+    conf_kv()
+        .get("Style")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Current Layaut= value from ng-term.conf (if non-empty).
+pub fn current_layaut_name() -> Option<String> {
+    conf_kv()
+        .get("Layaut")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn set_style_option(name: &str) {
+    set_conf_kv("Style", name);
+}
+
+pub fn set_layaut_option(name: &str) {
+    set_conf_kv("Layaut", name);
 }
 
 /// Sets Key=Value in ng-term.conf, preserving the rest of the file.
@@ -135,10 +335,9 @@ fn set_conf_kv(key: &str, value: &str) {
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     let mut replaced = false;
-    let alt = format!("{}=", key.trim_end_matches('s'));
     for line in lines.iter_mut() {
         let t = line.trim_start();
-        if t.starts_with(&format!("{key}=")) || (key == "Themes" && t.starts_with(&alt)) {
+        if t.starts_with(&format!("{key}=")) {
             *line = format!("{key}={value}");
             replaced = true;
             break;
@@ -185,10 +384,14 @@ fn init_tree(dir: &Path) {
             &conf,
             "# ng-term configuration\n\
              #\n\
-             # Themes=<name>  — picks a theme by the Name= field of the metafile\n\
-             #                  ~/.config/ng-term/themes/<dir>/meta\n\
-             # Empty value or missing option = default theme built into the program.\n\
-             Themes=\n",
+             # Look=<name>    — picks a complete theme by the Name= field of the\n\
+             #                  metafile ~/.config/ng-term/themes/look/<dir>/meta\n\
+             # Style=<name>   — style file from themes/style (no extension)\n\
+             # Layaut=<name>  — layout file from themes/layauts (no extension)\n\
+             # Empty values or missing options = defaults built into the program.\n\
+             Look=\n\
+             Style=\n\
+             Layaut=\n",
         );
     }
 
@@ -228,8 +431,10 @@ fn init_tree(dir: &Path) {
              control    = 0.6vw  64.5vh 16.4vw 32.5vh\n",
         );
         for (name, r, g, b, bg, grey, fg, tbg, cur) in BUILTIN_THEMES {
+            // The default style is tron's palette under the name "default".
+            let style_file = if name == "tron" { "default" } else { name };
             let _ = std::fs::write(
-                style.join(format!("{name}.css")),
+                style.join(format!("{style_file}.css")),
                 format!(
                     "/* Colors from the original eDEX-UI theme: {name} */\n\
                      :root {{\n\
@@ -256,7 +461,7 @@ fn init_tree(dir: &Path) {
                 );
                 // A complete theme holds only symlinks to the shared files.
                 let _ = std::os::unix::fs::symlink(
-                    format!("../../style/{name}.css"),
+                    format!("../../style/{style_file}.css"),
                     dir.join(format!("{name}.css")),
                 );
                 let _ = std::os::unix::fs::symlink(

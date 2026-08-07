@@ -202,23 +202,17 @@ fn main() {
                         let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
                         // An open settings window captures all clicks.
                         if settings.open {
-                            if let Some(name) = settings.click(
+                            if settings.click(
                                 mouse.0,
                                 mouse.1,
                                 size.width as f32,
                                 size.height as f32,
                             ) {
-                                // Save the choice and reload the theme live.
-                                config::set_theme_option(&name);
-                                match config::load_theme_by_name(&name) {
-                                    Some(new_cfg) => {
-                                        theme = new_cfg.theme;
-                                        layout_spec = new_cfg.layout;
-                                    }
-                                    None => eprintln!(
-                                        "ng-term: cannot load theme '{name}'"
-                                    ),
-                                }
+                                // Selection saved to ng-term.conf — re-resolve
+                                // the effective configuration and apply it live.
+                                let new_cfg = config::resolve();
+                                theme = new_cfg.theme;
+                                layout_spec = new_cfg.layout;
                             }
                             return;
                         }
