@@ -2,7 +2,7 @@
 //! CPU gauges, memory (dot grid), process list.
 
 use super::{Ctx, Rect};
-use crate::font::{FONT_MONO, FONT_UI};
+use crate::font::FONT_UI;
 use crate::system::{fmt_bytes, fmt_uptime, Snapshot};
 
 pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
@@ -22,11 +22,11 @@ pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
     // Column split into modules (fractions of the column height).
     let gap = ctx.vh(1.2);
     let slots: [(f32, fn(&mut Ctx, Rect, &Snapshot)); 6] = [
-        (0.13, clock),
+        (0.12, clock),
         (0.08, sysinfo),
-        (0.12, hardware),
-        (0.28, cpu),
-        (0.18, memory),
+        (0.135, hardware),
+        (0.26, cpu),
+        (0.195, memory),
         (0.21, toplist),
     ];
     let usable = col.h - gap * (slots.len() as f32 - 1.0);
@@ -41,8 +41,13 @@ pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
 fn clock(ctx: &mut Ctx, r: Rect, _snap: &Snapshot) {
     use chrono::Timelike;
     let now = chrono::Local::now();
-    let px = ctx.font_px(3.4);
+    let mut px = ctx.font_px(3.4);
     let text = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    // Shrink to fit narrow columns.
+    let total = ctx.fonts.measure(FONT_UI, px, &text, px * 0.08);
+    if total > r.w {
+        px *= (r.w / total) * 0.97;
+    }
     // Segments drawn separately, colons blink like in eDEX.
     let blink = (ctx.t.fract() < 0.5) as i32 as f32 * 0.75 + 0.25;
     let total_w = ctx.fonts.measure(FONT_UI, px, &text, px * 0.08);
@@ -80,13 +85,14 @@ fn sysinfo(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
         let cx = r.x + cw * i as f32 + cw / 2.0;
         ctx.dl
             .text_center(ctx.fonts, FONT_UI, px, cx, r.y, name, label, px * 0.1);
+        let val = fit_end(ctx, px * 1.1, val, cw - px * 0.6);
         ctx.dl.text_center(
             ctx.fonts,
             FONT_UI,
             px * 1.1,
             cx,
             r.y + px * 1.6,
-            val,
+            &val,
             ctx.theme.base,
             px * 0.05,
         );
@@ -105,7 +111,10 @@ fn hardware(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     for (i, (name, val)) in rows.iter().enumerate() {
         let y = r.y + rh * i as f32 + (rh - px * 1.3) / 2.0;
         ctx.dl.text(ctx.fonts, FONT_UI, px, r.x, y, name, label, px * 0.1);
-        let val = truncate(val, 24);
+        // Value trimmed by measured width, not by a character count.
+        let label_w = ctx.fonts.measure(FONT_UI, px, name, px * 0.1);
+        let avail = (r.w - label_w - px).max(px * 3.0);
+        let val = fit_end(ctx, px, val, avail);
         ctx.dl
             .text_right(ctx.fonts, FONT_UI, px, r.right(), y, &val, ctx.theme.base, px * 0.05);
     }
@@ -113,7 +122,9 @@ fn hardware(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
 
 fn cpu(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     let title_px = ctx.font_px(1.02);
-    let name = truncate(&snap.cpu_name.to_uppercase(), 26);
+    let left_w = ctx.fonts.measure(FONT_UI, title_px, "CPU USAGE", title_px * 0.06);
+    let avail = (r.w - left_w - title_px * 3.0).max(title_px * 4.0);
+    let name = fit_end(ctx, title_px, &snap.cpu_name.to_uppercase(), avail);
     ctx.dl.module_title(
         ctx.fonts,
         r.x,
@@ -153,7 +164,7 @@ fn cpu(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
         if gh > ctx.font_px(0.8) * 1.4 {
             let px = ctx.font_px(0.75);
             let text = format!("{v:>3.0}%");
-            let tw = ctx.fonts.measure(FONT_MONO, px, &text, 0.0);
+            let tw = ctx.fonts.measure(FONT_UI, px, &text, 0.0);
             let color = if fill_w >= gw - 2.0 - tw - 4.0 {
                 ctx.theme.bg
             } else {
@@ -161,7 +172,7 @@ fn cpu(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
             };
             ctx.dl.text(
                 ctx.fonts,
-                FONT_MONO,
+                FONT_UI,
                 px,
                 gx + gw - tw - 3.0,
                 gy + (gh - px * 1.3) / 2.0,
@@ -179,16 +190,22 @@ fn cpu(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
         "LOAD {:.2} {:.2} {:.2}",
         snap.load_avg[0], snap.load_avg[1], snap.load_avg[2]
     );
+    let temp_text = snap.temp_c.map(|t| format!("TEMP {t:.0}\u{00B0}C"));
+    let temp_w = temp_text
+        .as_ref()
+        .map(|t| ctx.fonts.measure(FONT_UI, px, t, px * 0.05))
+        .unwrap_or(0.0);
+    let load = fit_end(ctx, px, &load, (r.w - temp_w - px).max(px * 3.0));
     ctx.dl
         .text(ctx.fonts, FONT_UI, px, r.x, fy, &load, ctx.theme.base.alpha(0.7), px * 0.05);
-    if let Some(temp) = snap.temp_c {
+    if let Some(t) = &temp_text {
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
             px,
             r.right(),
             fy,
-            &format!("TEMP {temp:.0}\u{00B0}C"),
+            t,
             ctx.theme.base.alpha(0.7),
             px * 0.05,
         );
@@ -237,20 +254,13 @@ fn memory(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     }
 
     let ty = grid.bottom() + px * 0.35;
-    ctx.dl.text(
-        ctx.fonts,
-        FONT_UI,
-        px,
-        r.x,
-        ty,
-        &format!(
-            "USING {} OUT OF {}",
-            fmt_bytes(snap.mem_used),
-            fmt_bytes(snap.mem_total)
-        ),
-        ctx.theme.base,
-        px * 0.05,
+    let using = format!(
+        "USING {} OUT OF {}",
+        fmt_bytes(snap.mem_used),
+        fmt_bytes(snap.mem_total)
     );
+    let using = fit_end(ctx, px, &using, r.w);
+    ctx.dl.text(ctx.fonts, FONT_UI, px, r.x, ty, &using, ctx.theme.base, px * 0.05);
 
     // Swap bar.
     let sy = ty + text_h;
@@ -258,7 +268,12 @@ fn memory(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     let lw = ctx.fonts.measure(FONT_UI, px, label, px * 0.1) + px;
     ctx.dl
         .text(ctx.fonts, FONT_UI, px, r.x, sy, label, ctx.theme.base.alpha(0.5), px * 0.1);
-    let bar = Rect::new(r.x + lw, sy + px * 0.25, r.w - lw - px * 5.0, px * 0.6);
+    let bar = Rect::new(
+        r.x + lw,
+        sy + px * 0.25,
+        (r.w - lw - px * 5.0).max(px),
+        px * 0.6,
+    );
     ctx.dl
         .rect_outline(bar.x, bar.y, bar.w, bar.h, 1.0, ctx.theme.base.alpha(0.3));
     let sfrac = if snap.swap_total > 0 {
@@ -285,7 +300,7 @@ fn toplist(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     let px = ctx.font_px(0.92);
 
     // Column geometry shared by the header and rows (mono font).
-    let mono1 = ctx.fonts.measure(FONT_MONO, px, "0", 0.0);
+    let mono1 = ctx.fonts.measure(FONT_UI, px, "0", 0.0);
     let pid_right = r.x + 6.0 * mono1;
     let name_x = r.x + px * 4.5;
     // Right block: "{:>5.1}%" (CPU, 6 ch) + space + "{:>4.1}%" (MEM, 5 ch).
@@ -320,7 +335,7 @@ fn toplist(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
         }
         ctx.dl.text_right(
             ctx.fonts,
-            FONT_MONO,
+            FONT_UI,
             px,
             pid_right,
             y,
@@ -328,29 +343,24 @@ fn toplist(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
             ctx.theme.base.alpha(0.6),
             0.0,
         );
-        ctx.dl.text(
-            ctx.fonts,
-            FONT_MONO,
-            px,
-            name_x,
-            y,
-            &truncate(&p.name, 14),
-            ctx.theme.base,
-            0.0,
-        );
+        let cpu_txt = format!("{:.1}%", p.cpu);
+        let cpu_w = ctx.fonts.measure(FONT_UI, px, &cpu_txt, 0.0);
+        let avail = (cpu_right - cpu_w - name_x - px).max(px * 2.0);
+        let name = fit_end(ctx, px, &p.name, avail);
+        ctx.dl.text(ctx.fonts, FONT_UI, px, name_x, y, &name, ctx.theme.base, 0.0);
         ctx.dl.text_right(
             ctx.fonts,
-            FONT_MONO,
+            FONT_UI,
             px,
             cpu_right,
             y,
-            &format!("{:.1}%", p.cpu),
+            &cpu_txt,
             ctx.theme.base.alpha(0.8),
             0.0,
         );
         ctx.dl.text_right(
             ctx.fonts,
-            FONT_MONO,
+            FONT_UI,
             px,
             r.right(),
             y,
@@ -362,11 +372,21 @@ fn toplist(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() > max {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}\u{2026}")
-    } else {
-        s.to_string()
+/// Trims text (with a trailing ellipsis) so it fits the given width.
+fn fit_end(ctx: &mut Ctx, px: f32, text: &str, max_w: f32) -> String {
+    if ctx.fonts.measure(FONT_UI, px, text, px * 0.06) <= max_w {
+        return text.to_string();
     }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len().saturating_sub(1);
+    while n > 1 {
+        let cand: String =
+            chars[..n].iter().collect::<String>() + "\u{2026}";
+        if ctx.fonts.measure(FONT_UI, px, &cand, px * 0.06) <= max_w {
+            return cand;
+        }
+        n -= 1;
+    }
+    "\u{2026}".to_string()
 }
+

@@ -7,6 +7,7 @@ pub mod control;
 pub mod filesystem;
 pub mod keyboard;
 pub mod left;
+pub mod popup;
 pub mod right;
 pub mod settings;
 pub mod shell;
@@ -115,6 +116,10 @@ pub struct Ctx<'a> {
     pub t: f64,
     /// Mouse cursor position.
     pub mouse: (f32, f32),
+    /// Terminal font size multiplier (TermFontSize= in ng-term.conf).
+    pub term_font_scale: f32,
+    /// Interface font size multiplier (UIFontSize= in ng-term.conf).
+    pub ui_font_scale: f32,
 }
 
 impl<'a> Ctx<'a> {
@@ -124,8 +129,8 @@ impl<'a> Ctx<'a> {
     pub fn vw(&self, v: f32) -> f32 {
         self.w / 100.0 * v
     }
-    /// Font size no smaller than 8 px (readability in small windows).
+    /// Interface font size: scaled by UIFontSize= (text only), min 8 px.
     pub fn font_px(&self, v: f32) -> f32 {
-        self.vh(v).max(8.0)
+        (self.vh(v) * self.ui_font_scale).max(8.0)
     }
 }

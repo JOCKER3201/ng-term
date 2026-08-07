@@ -115,7 +115,8 @@ pub fn draw(
         r.h - tab_h - 2.6 * pad,
     );
 
-    let px = ctx.font_px(1.45);
+    // Terminal font: scaled by TermFontSize= only (not by the UI scale).
+    let px = (ctx.vh(1.45) * ctx.term_font_scale).max(8.0);
     let cell_w = ctx.fonts.mono_advance(px).max(1.0);
     let (ascent, line_h) = ctx.fonts.line_metrics(FONT_MONO, px);
     let cell_h = line_h.max(1.0);

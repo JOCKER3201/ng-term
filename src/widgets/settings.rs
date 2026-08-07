@@ -16,6 +16,7 @@ enum View {
     Look,
     Styles,
     Layauts,
+    Font,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -29,7 +30,29 @@ enum Act {
     Look(usize),
     Style(usize),
     Layaut(usize),
+    OpenFont,
+    SizeTrack(Sect),
+    FamilyBtn(Sect),
+    WeightBtn(Sect),
+    FamilyPick(Sect, usize),
+    WeightPick(Sect, usize),
 }
+
+/// Font section: terminal or the rest of the interface.
+#[derive(Clone, Copy, PartialEq)]
+enum Sect {
+    Term,
+    Ui,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Dropdown {
+    Family(Sect),
+    Weight(Sect),
+}
+
+/// Weight options offered in the WEIGHT dropdown.
+const WEIGHTS: [&str; 5] = ["Light", "Regular", "Medium", "SemiBold", "Bold"];
 
 pub struct Settings {
     pub open: bool,
@@ -41,6 +64,17 @@ pub struct Settings {
     current_look: Option<String>,
     current_style: Option<String>,
     current_layaut: Option<String>,
+    /// Font view state, indexed by section (0 = Term, 1 = Ui).
+    families: [Vec<String>; 2],
+    cur_family: [Option<String>; 2],
+    cur_weight: [Option<String>; 2],
+    /// Font sizes in percent (50-200).
+    cur_size: [u32; 2],
+    dragging_size: Option<Sect>,
+    slider_rect: [Rect; 2],
+    dropdown: Option<Dropdown>,
+    /// Moment otwarcia listy — do animacji harmonijki.
+    dropdown_since: Option<Instant>,
     hits: Vec<(Rect, Act)>,
     flash: Option<(Act, Instant)>,
 }
@@ -63,9 +97,73 @@ impl Settings {
             current_look: None,
             current_style: None,
             current_layaut: None,
+            families: [Vec::new(), Vec::new()],
+            cur_family: [None, None],
+            cur_weight: [None, None],
+            cur_size: [100, 100],
+            dragging_size: None,
+            slider_rect: [Rect::new(0.0, 0.0, 0.0, 0.0); 2],
+            dropdown: None,
+            dropdown_since: None,
             hits: Vec::new(),
             flash: None,
         }
+    }
+
+    fn sect_idx(sect: Sect) -> usize {
+        match sect {
+            Sect::Term => 0,
+            Sect::Ui => 1,
+        }
+    }
+
+    /// Slider range per section: terminal 50-200%, interface 75-125%.
+    fn size_range(sect: Sect) -> (f32, f32) {
+        match sect {
+            Sect::Term => (50.0, 200.0),
+            Sect::Ui => (75.0, 125.0),
+        }
+    }
+
+    fn set_size_from_x(&mut self, sect: Sect, x: f32) {
+        let i = Self::sect_idx(sect);
+        let (min, max) = Self::size_range(sect);
+        let track = self.slider_rect[i];
+        let t = ((x - track.x) / track.w.max(1.0)).clamp(0.0, 1.0);
+        self.cur_size[i] = (min + t * (max - min)).round() as u32;
+    }
+
+    /// Mouse move while dragging a size slider.
+    pub fn drag(&mut self, x: f32) {
+        if let Some(sect) = self.dragging_size {
+            self.set_size_from_x(sect, x);
+        }
+    }
+
+    /// Live font scales for the sliders in the FONT view — applied every
+    /// frame so dragging changes the size smoothly, not on release.
+    pub fn live_scales(&self) -> Option<(f32, f32)> {
+        if self.open && self.view == View::Font {
+            Some((
+                self.cur_size[0] as f32 / 100.0,
+                self.cur_size[1] as f32 / 100.0,
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Mouse button released; returns true when the configuration changed.
+    pub fn release(&mut self) -> bool {
+        if let Some(sect) = self.dragging_size.take() {
+            let i = Self::sect_idx(sect);
+            match sect {
+                Sect::Term => config::set_term_font_size(self.cur_size[i]),
+                Sect::Ui => config::set_ui_font_size(self.cur_size[i]),
+            }
+            return true;
+        }
+        false
     }
 
     pub fn show(&mut self) {
@@ -88,17 +186,28 @@ impl Settings {
         if !self.open {
             return false;
         }
-        if !modal_rect(w, h).contains(x, y) {
-            // Clicks outside the window are swallowed; closing is done
-            // with the CLOSE button (or ESC), not by clicking outside.
+        // Topmost element wins (dropdown items are drawn last). Elements
+        // are checked BEFORE the window bounds, so dropdown items that
+        // extend past the window edge remain clickable.
+        let act = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|&(_, a)| a);
+        let Some(act) = act else {
+            // No element hit: swallow the click; a click inside the
+            // window closes an open dropdown.
+            if modal_rect(w, h).contains(x, y) {
+                self.dropdown = None;
+            }
             return false;
-        }
-        let act = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|&(_, a)| a);
-        let Some(act) = act else { return false };
+        };
         self.flash = Some((act, Instant::now()));
         match act {
             Act::Close => self.open = false,
             Act::Back => {
+                self.dropdown = None;
                 self.view = match self.view {
                     View::Look | View::Styles | View::Layauts => View::Themes,
                     _ => View::Menu,
@@ -156,6 +265,72 @@ impl Settings {
                     return true;
                 }
             }
+            Act::OpenFont => {
+                self.families = [
+                    crate::font::available_mono_families(),
+                    crate::font::available_ui_families(),
+                ];
+                let (tscale, tfam, twgt) = config::term_font_prefs();
+                let (uscale, ufam, uwgt) = config::ui_font_prefs();
+                self.cur_size = [
+                    (tscale * 100.0).round() as u32,
+                    (uscale * 100.0).round() as u32,
+                ];
+                self.cur_family = [tfam, ufam];
+                self.cur_weight = [twgt, uwgt];
+                self.dropdown = None;
+                self.view = View::Font;
+            }
+            Act::SizeTrack(sect) => {
+                self.dragging_size = Some(sect);
+                self.set_size_from_x(sect, x);
+            }
+            Act::FamilyBtn(sect) => {
+                self.dropdown = if self.dropdown == Some(Dropdown::Family(sect)) {
+                    None
+                } else {
+                    self.dropdown_since = Some(Instant::now());
+                    Some(Dropdown::Family(sect))
+                };
+            }
+            Act::WeightBtn(sect) => {
+                self.dropdown = if self.dropdown == Some(Dropdown::Weight(sect)) {
+                    None
+                } else {
+                    self.dropdown_since = Some(Instant::now());
+                    Some(Dropdown::Weight(sect))
+                };
+            }
+            Act::FamilyPick(sect, i) => {
+                self.dropdown = None;
+                let si = Self::sect_idx(sect);
+                let value = if i == 0 {
+                    // First entry: DEFAULT (auto-detected font).
+                    None
+                } else {
+                    self.families[si].get(i - 1).cloned()
+                };
+                match sect {
+                    Sect::Term => {
+                        config::set_term_font_family(value.as_deref().unwrap_or(""))
+                    }
+                    Sect::Ui => config::set_ui_font_family(value.as_deref().unwrap_or("")),
+                }
+                self.cur_family[si] = value;
+                return true;
+            }
+            Act::WeightPick(sect, i) => {
+                self.dropdown = None;
+                if let Some(w) = WEIGHTS.get(i) {
+                    let si = Self::sect_idx(sect);
+                    match sect {
+                        Sect::Term => config::set_term_font_weight(w),
+                        Sect::Ui => config::set_ui_font_weight(w),
+                    }
+                    self.cur_weight[si] = Some(w.to_string());
+                    return true;
+                }
+            }
         }
         false
     }
@@ -194,6 +369,7 @@ impl Settings {
             View::Look => "SETTINGS \u{2014} LOOK",
             View::Styles => "SETTINGS \u{2014} STYLES",
             View::Layauts => "SETTINGS \u{2014} LAYAUTS",
+            View::Font => "SETTINGS \u{2014} FONT",
         };
         ctx.dl.module_title(
             ctx.fonts,
@@ -225,18 +401,20 @@ impl Settings {
                     "CLOSE",
                     Act::Close,
                 );
-                // Menu entry: THEMES.
+                // Menu entries: THEMES and FONT.
                 let bw = content.w * 0.6;
+                let bx = content.x + (content.w - bw) / 2.0;
                 self.button(
                     ctx,
-                    Rect::new(
-                        content.x + (content.w - bw) / 2.0,
-                        content.y + btn_h + gap,
-                        bw,
-                        btn_h,
-                    ),
+                    Rect::new(bx, content.y + btn_h + gap, bw, btn_h),
                     "THEMES",
                     Act::OpenThemes,
+                );
+                self.button(
+                    ctx,
+                    Rect::new(bx, content.y + (btn_h + gap) * 2.0, bw, btn_h),
+                    "FONT",
+                    Act::OpenFont,
                 );
             }
             View::Themes => {
@@ -275,6 +453,201 @@ impl Settings {
                 self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Layaut);
                 self.empty_note(ctx, content, btn_h, gap, &names, "NO LAYAUTS FOUND");
             }
+            View::Font => self.draw_font_view(ctx, content, btn_h, gap, corner_w),
+        }
+    }
+
+    /// FONT view: TERMINAL and INTERFACE sections, each with a size
+    /// slider and family/weight dropdowns, separated by module headers.
+    fn draw_font_view(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        btn_h: f32,
+        gap: f32,
+        corner_w: f32,
+    ) {
+        self.button(
+            ctx,
+            Rect::new(content.x, content.y, corner_w, btn_h),
+            "BACK",
+            Act::Back,
+        );
+
+        let mut y = content.y + btn_h + gap;
+        let mut anchors: Vec<(Sect, Rect, Rect)> = Vec::new();
+        for (sect, header) in [(Sect::Term, "TERMINAL"), (Sect::Ui, "INTERFACE")] {
+            let (fam_rect, wgt_rect, next_y) =
+                self.draw_font_section(ctx, content, y, btn_h, gap, sect, header);
+            anchors.push((sect, fam_rect, wgt_rect));
+            y = next_y;
+        }
+
+        // Open dropdown list (drawn last = on top, reverse hit-testing).
+        let item_h = btn_h * 0.8;
+        for (sect, fam_rect, wgt_rect) in anchors {
+            match self.dropdown {
+                Some(Dropdown::Family(d)) if d == sect => {
+                    let si = Self::sect_idx(sect);
+                    let mut names = vec!["DEFAULT".to_string()];
+                    names.extend(self.families[si].iter().map(|f| f.to_uppercase()));
+                    self.draw_dropdown(ctx, fam_rect, item_h, &names, |i| {
+                        Act::FamilyPick(sect, i)
+                    });
+                }
+                Some(Dropdown::Weight(d)) if d == sect => {
+                    let names: Vec<String> =
+                        WEIGHTS.iter().map(|w| w.to_uppercase()).collect();
+                    self.draw_dropdown(ctx, wgt_rect, item_h, &names, |i| {
+                        Act::WeightPick(sect, i)
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One font section: header separator + SIZE slider + FAMILY/WEIGHT
+    /// buttons. Returns the two dropdown anchors and the next free y.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_font_section(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        top: f32,
+        btn_h: f32,
+        gap: f32,
+        sect: Sect,
+        header: &str,
+    ) -> (Rect, Rect, f32) {
+        let base = ctx.theme.base;
+        let si = Self::sect_idx(sect);
+        let title_px = ctx.font_px(1.02);
+        // Section separator like every other module header.
+        ctx.dl.module_title(
+            ctx.fonts,
+            content.x,
+            top,
+            content.w,
+            title_px,
+            header,
+            "",
+            base,
+        );
+
+        let px = ctx.font_px(1.0);
+        let row_x = content.x;
+        let row_w = content.w;
+
+        // SIZE: label, slider track with a knob, percent value.
+        let size_y = top + title_px * 2.4;
+        ctx.dl.text(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            row_x,
+            size_y + (btn_h - px * 1.3) / 2.0,
+            "SIZE",
+            base,
+            px * 0.1,
+        );
+        let label_w = ctx.fonts.measure(FONT_UI, px, "SIZE", px * 0.1) + px * 2.0;
+        let value_w = ctx.fonts.measure(FONT_UI, px, "200%", px * 0.05) + px;
+        let track = Rect::new(row_x + label_w, size_y, row_w - label_w - value_w, btn_h);
+        self.slider_rect[si] = track;
+        let cy = track.y + track.h / 2.0;
+        ctx.dl.line(track.x, cy, track.right(), cy, 2.0, base.alpha(0.3));
+        let (rmin, rmax) = Self::size_range(sect);
+        let t = ((self.cur_size[si] as f32 - rmin) / (rmax - rmin)).clamp(0.0, 1.0);
+        let knob_x = track.x + t * track.w;
+        ctx.dl.line(track.x, cy, knob_x, cy, 2.0, base);
+        let ks = track.h * 0.28;
+        ctx.dl.rect(knob_x - ks / 2.0, cy - ks, ks, ks * 2.0, base);
+        ctx.dl.text_right(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.right(),
+            size_y + (btn_h - px * 1.3) / 2.0,
+            &format!("{}%", self.cur_size[si]),
+            base,
+            px * 0.05,
+        );
+        self.hits.push((track, Act::SizeTrack(sect)));
+
+        // FAMILY and WEIGHT dropdown buttons.
+        let fam_y = size_y + btn_h + gap;
+        let fam_label = format!(
+            "FAMILY: {}",
+            self.cur_family[si].as_deref().unwrap_or("DEFAULT").to_uppercase()
+        );
+        let fam_rect = Rect::new(row_x, fam_y, row_w, btn_h);
+        self.button(ctx, fam_rect, &fam_label, Act::FamilyBtn(sect));
+
+        let wgt_y = fam_y + btn_h + gap;
+        let wgt_label = format!(
+            "WEIGHT: {}",
+            self.cur_weight[si].as_deref().unwrap_or("REGULAR").to_uppercase()
+        );
+        let wgt_rect = Rect::new(row_x, wgt_y, row_w, btn_h);
+        self.button(ctx, wgt_rect, &wgt_label, Act::WeightBtn(sect));
+
+        (fam_rect, wgt_rect, wgt_y + btn_h + gap)
+    }
+
+    /// Dropdown list under an anchor button.
+    fn draw_dropdown<F: Fn(usize) -> Act>(
+        &mut self,
+        ctx: &mut Ctx,
+        anchor: Rect,
+        item_h: f32,
+        names: &[String],
+        make_act: F,
+    ) {
+        let base = ctx.theme.base;
+        let px = ctx.font_px(0.95);
+        // Accordion animation: the list unfolds from the anchor's edge.
+        let t = self
+            .dropdown_since
+            .map(|s| (s.elapsed().as_secs_f32() / 0.15).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        let p = 1.0 - (1.0 - t) * (1.0 - t); // ease-out
+        let visible_h = p * item_h * names.len() as f32;
+        for (i, name) in names.iter().enumerate() {
+            let top = item_h * i as f32;
+            if top >= visible_h {
+                break;
+            }
+            // The edge closest to the anchor coincides with the anchor's
+            // bottom edge and the list is exactly as wide as that edge
+            // (the button is a parallelogram — its bottom edge is shorter
+            // by the skew).
+            let skew = anchor.h * 0.7;
+            let h = (visible_h - top).min(item_h);
+            let r = Rect::new(anchor.x, anchor.bottom() + top, anchor.w - skew, h);
+            // Floating-point tolerance: the LAST item's height comes from a
+            // subtraction and can be epsilon short of item_h.
+            let full = h >= item_h - 0.5;
+            let hover = full && r.contains(ctx.mouse.0, ctx.mouse.1);
+            // Opaque background first, hover overlay on top of it.
+            ctx.dl.rect(r.x, r.y, r.w, r.h, ctx.theme.bg);
+            if hover {
+                ctx.dl.rect(r.x, r.y, r.w, r.h, base.alpha(0.25));
+            }
+            ctx.dl.rect_outline(r.x, r.y, r.w, r.h, 1.0, base.alpha(0.4));
+            if h >= item_h * 0.7 {
+                ctx.dl.text_center(
+                    ctx.fonts,
+                    FONT_UI,
+                    px,
+                    r.cx(),
+                    r.y + (h - px * 1.3) / 2.0,
+                    name,
+                    if hover { base } else { base.alpha(0.8) },
+                    px * 0.05,
+                );
+            }
+            self.hits.push((r, make_act(i)));
         }
     }
 
@@ -344,7 +717,8 @@ impl Settings {
     /// Button in the terminal-tab style (slant, hover, flash on click).
     fn button(&mut self, ctx: &mut Ctx, r: Rect, label: &str, act: Act) {
         let base = ctx.theme.base;
-        let hover = r.contains(ctx.mouse.0, ctx.mouse.1);
+        // With an open dropdown only its items react to the mouse.
+        let hover = self.dropdown.is_none() && r.contains(ctx.mouse.0, ctx.mouse.1);
         let flash = self
             .flash
             .map(|(a, t)| a == act && t.elapsed().as_secs_f32() < 0.15)

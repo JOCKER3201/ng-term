@@ -229,13 +229,8 @@ impl Filesystem {
                 );
             }
 
-            // Name under the icon.
-            let name = if entry.name.chars().count() > 12 {
-                let cut: String = entry.name.chars().take(11).collect();
-                format!("{cut}\u{2026}")
-            } else {
-                entry.name.clone()
-            };
+            // Name under the icon, trimmed by measured width.
+            let name = fit_name(ctx, name_px, &entry.name, tile);
             ctx.dl.text_center(
                 ctx.fonts,
                 FONT_UI,
@@ -250,6 +245,23 @@ impl Filesystem {
             self.hits.push((trect, i));
         }
     }
+}
+
+/// Trims text (with a trailing ellipsis) so it fits the given width.
+fn fit_name(ctx: &mut Ctx, px: f32, text: &str, max_w: f32) -> String {
+    if ctx.fonts.measure(FONT_UI, px, text, 0.0) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len().saturating_sub(1);
+    while n > 1 {
+        let cand: String = chars[..n].iter().collect::<String>() + "\u{2026}";
+        if ctx.fonts.measure(FONT_UI, px, &cand, 0.0) <= max_w {
+            return cand;
+        }
+        n -= 1;
+    }
+    "\u{2026}".to_string()
 }
 
 /// Trims text from the left (with a leading ellipsis) so it fits

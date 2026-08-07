@@ -4,6 +4,23 @@ use super::{Ctx, Rect};
 use crate::font::FONT_UI;
 use crate::system::Snapshot;
 
+/// Trims text (with a trailing ellipsis) so it fits the given width.
+fn fit_end(ctx: &mut Ctx, px: f32, text: &str, max_w: f32) -> String {
+    if ctx.fonts.measure(FONT_UI, px, text, px * 0.06) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len().saturating_sub(1);
+    while n > 1 {
+        let cand: String = chars[..n].iter().collect::<String>() + "\u{2026}";
+        if ctx.fonts.measure(FONT_UI, px, &cand, px * 0.06) <= max_w {
+            return cand;
+        }
+        n -= 1;
+    }
+    "\u{2026}".to_string()
+}
+
 pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
     let title_px = ctx.font_px(1.02);
     ctx.dl.module_title(
@@ -55,7 +72,11 @@ fn netstat(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {
     for (i, (name, val)) in rows.iter().enumerate() {
         let y = top + rh * i as f32;
         ctx.dl.text(ctx.fonts, FONT_UI, px, r.x, y, name, label, px * 0.1);
+        // Value trimmed by measured width so it never overlaps the label.
+        let label_w = ctx.fonts.measure(FONT_UI, px, name, px * 0.1);
+        let avail = (r.w - label_w - px).max(px * 3.0);
+        let val = fit_end(ctx, px, val, avail);
         ctx.dl
-            .text_right(ctx.fonts, FONT_UI, px, r.right(), y, val, ctx.theme.base, px * 0.05);
+            .text_right(ctx.fonts, FONT_UI, px, r.right(), y, &val, ctx.theme.base, px * 0.05);
     }
 }

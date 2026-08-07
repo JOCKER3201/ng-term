@@ -62,6 +62,18 @@ impl FontSystem {
         fs
     }
 
+    /// Replaces the terminal font (settings change); resets the atlas.
+    pub fn set_mono(&mut self, font: Font) {
+        self.fonts[FONT_MONO as usize] = font;
+        self.reset_atlas();
+    }
+
+    /// Replaces the interface font (settings change); resets the atlas.
+    pub fn set_ui(&mut self, font: Font) {
+        self.fonts[FONT_UI as usize] = font;
+        self.reset_atlas();
+    }
+
     /// UV of the white pixel — used by solid shapes.
     pub fn white_uv() -> (f32, f32) {
         (0.5 / ATLAS_W as f32, 0.5 / ATLAS_H as f32)
@@ -198,12 +210,15 @@ fn find_font(dirs: &[PathBuf], patterns: &[&str]) -> Option<PathBuf> {
                 if !(name.ends_with("ttf") || name.ends_with("otf")) {
                     continue;
                 }
-                // Prefer Regular/Medium variants, avoid Italic/Bold.
-                if name.contains("italic") || name.contains("oblique") || name.contains("bold") {
+                // Avoid italic variants; bold only when explicitly requested.
+                if name.contains("italic") || name.contains("oblique") {
                     continue;
                 }
                 for pat in patterns {
                     if name.contains(pat) {
+                        if name.contains("bold") && !pat.contains("bold") {
+                            continue;
+                        }
                         *out = Some(p.clone());
                         break;
                     }
@@ -234,10 +249,126 @@ fn font_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn load_fonts() -> (Font, Font) {
-    let dirs = font_dirs();
+/// Curated monospace families for the settings dropdown
+/// (display name, normalized filename pattern).
+const MONO_FAMILIES: [(&str, &str); 12] = [
+    ("Fira Mono", "firamono"),
+    ("Fira Code", "firacode"),
+    ("JetBrains Mono", "jetbrainsmono"),
+    ("DejaVu Sans Mono", "dejavusansmono"),
+    ("Liberation Mono", "liberationmono"),
+    ("Noto Sans Mono", "notosansmono"),
+    ("Ubuntu Mono", "ubuntumono"),
+    ("Source Code Pro", "sourcecodepro"),
+    ("Hack", "hack"),
+    ("IBM Plex Mono", "ibmplexmono"),
+    ("Cascadia Code", "cascadiacode"),
+    ("Inconsolata", "inconsolata"),
+];
 
-    // Terminal font: Fira Mono like eDEX, then sensible fallbacks.
+/// Curated interface (UI) families (display name, filename pattern).
+const UI_FAMILIES: [(&str, &str); 7] = [
+    ("United Sans", "unitedsans"),
+    ("Oxanium", "oxanium"),
+    ("Rajdhani", "rajdhani"),
+    ("Exo 2", "exo2"),
+    ("Orbitron", "orbitron"),
+    ("Saira Condensed", "sairacondensed"),
+    ("Saira", "saira"),
+];
+
+fn pattern_for(display: &str) -> Option<&'static str> {
+    MONO_FAMILIES
+        .iter()
+        .chain(UI_FAMILIES.iter())
+        .find(|(name, _)| *name == display)
+        .map(|(_, pat)| *pat)
+}
+
+fn available_from(table: &[(&str, &str)]) -> Vec<String> {
+    let dirs = font_dirs();
+    table
+        .iter()
+        .filter(|(_, pat)| find_font(&dirs, &[pat]).is_some())
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Monospace families actually available on this system (terminal font).
+pub fn available_mono_families() -> Vec<String> {
+    available_from(&MONO_FAMILIES)
+}
+
+/// Interface families available on this system (UI list first, then mono).
+pub fn available_ui_families() -> Vec<String> {
+    let mut out = available_from(&UI_FAMILIES);
+    out.extend(available_from(&MONO_FAMILIES));
+    out
+}
+
+/// Default search patterns used when no family is selected.
+const DEFAULT_MONO_PATTERNS: [&str; 6] = [
+    "firamono", "firacode", "jetbrainsmono", "dejavusansmono",
+    "liberationmono", "notosansmono",
+];
+const DEFAULT_UI_PATTERNS: [&str; 8] = [
+    "unitedsansmedium", "unitedsans", "oxanium", "rajdhani",
+    "exo2", "orbitron", "sairacondensed", "saira",
+];
+
+/// Loads a font by family display name and weight
+/// (Light/Regular/Medium/SemiBold/Bold). With no family selected the
+/// weight is searched across the default families of the given kind.
+pub fn load_variant_for(
+    family: Option<&str>,
+    weight: Option<&str>,
+    ui: bool,
+) -> Option<Font> {
+    let dirs = font_dirs();
+    let w = weight.unwrap_or("Regular").to_lowercase().replace(' ', "");
+    let base: Vec<&str> = match family.and_then(pattern_for) {
+        Some(p) => vec![p],
+        None => {
+            if ui {
+                DEFAULT_UI_PATTERNS.to_vec()
+            } else {
+                DEFAULT_MONO_PATTERNS.to_vec()
+            }
+        }
+    };
+    // The requested weight first, across all candidate families. For the
+    // default UI font the weighted search also covers the mono families,
+    // because United Sans ships in a single weight only.
+    let mut weighted = base.clone();
+    if ui && family.is_none() {
+        weighted.extend(DEFAULT_MONO_PATTERNS);
+    }
+    if w != "regular" {
+        for pat in &weighted {
+            let c = format!("{pat}{w}");
+            if let Some(p) = find_font(&dirs, &[c.as_str()]) {
+                if let Some(f) = try_load(&p) {
+                    return Some(f);
+                }
+            }
+        }
+    }
+    // ...then the regular variants.
+    for pat in &base {
+        for c in [format!("{pat}regular"), pat.to_string()] {
+            if let Some(p) = find_font(&dirs, &[c.as_str()]) {
+                if let Some(f) = try_load(&p) {
+                    return Some(f);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Loads the default terminal font (Fira Mono like eDEX, then fallbacks).
+pub fn load_default_mono() -> Font {
+    let dirs = font_dirs();
     let mono_path = std::env::var("NGTERM_FONT_MONO").ok().map(PathBuf::from).or_else(|| {
         find_font(
             &dirs,
@@ -248,8 +379,18 @@ fn load_fonts() -> (Font, Font) {
             ],
         )
     });
+    mono_path.as_deref().and_then(try_load).unwrap_or_else(|| {
+        panic!(
+            "ng-term: no monospace font (.ttf/.otf) found.\n\
+             Point NGTERM_FONT_MONO at one or drop it into ./fonts"
+        )
+    })
+}
 
-    // UI font: United Sans like eDEX, then similar "technical" typefaces.
+/// Loads the default interface font (United Sans like eDEX, then similar
+/// "technical" typefaces; falls back to the monospace font).
+pub fn load_default_ui() -> Font {
+    let dirs = font_dirs();
     let ui_path = std::env::var("NGTERM_FONT_UI").ok().map(PathBuf::from).or_else(|| {
         find_font(
             &dirs,
@@ -259,17 +400,12 @@ fn load_fonts() -> (Font, Font) {
             ],
         )
     });
-
-    let mono = mono_path
-        .as_deref()
-        .and_then(try_load)
-        .unwrap_or_else(|| panic!(
-            "ng-term: no monospace font (.ttf/.otf) found.\n\
-             Point NGTERM_FONT_MONO at one or drop it into ./fonts"
-        ));
-    let ui = ui_path.as_deref().and_then(try_load).unwrap_or_else(|| {
+    ui_path.as_deref().and_then(try_load).unwrap_or_else(|| {
         eprintln!("ng-term: no UI font (United Sans) — using the monospace font");
-        mono.clone()
-    });
-    (ui, mono)
+        load_default_mono()
+    })
+}
+
+fn load_fonts() -> (Font, Font) {
+    (load_default_ui(), load_default_mono())
 }

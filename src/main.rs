@@ -71,10 +71,25 @@ impl Session {
 
 fn main() {
     // Configuration: ~/.config/ng-term (created on first start).
-    let cfg = config::load();
+    let (cfg, startup_warning) = config::load();
     let mut theme = cfg.theme;
     let mut layout_spec = cfg.layout;
     let mut fonts = font::FontSystem::new();
+    // Font preferences (size scales + family/weight, terminal and UI).
+    let (mut font_scale, tfam, twgt) = config::term_font_prefs();
+    let (mut ui_font_scale, ufam, uwgt) = config::ui_font_prefs();
+    let mut last_term_key = (tfam.clone().unwrap_or_default(), twgt.clone().unwrap_or_default());
+    let mut last_ui_key = (ufam.clone().unwrap_or_default(), uwgt.clone().unwrap_or_default());
+    if tfam.is_some() || twgt.is_some() {
+        if let Some(f) = font::load_variant_for(tfam.as_deref(), twgt.as_deref(), false) {
+            fonts.set_mono(f);
+        }
+    }
+    if ufam.is_some() || uwgt.is_some() {
+        if let Some(f) = font::load_variant_for(ufam.as_deref(), uwgt.as_deref(), true) {
+            fonts.set_ui(f);
+        }
+    }
 
     // Window backend selection: Wayland natively, but an X11 session or
     // gamescope (a gaming compositor exposing XWayland) forces X11.
@@ -135,11 +150,16 @@ fn main() {
     let mut fsp = widgets::filesystem::Filesystem::new(home.clone());
     let mut control = widgets::control::Control::new();
     let mut settings = widgets::settings::Settings::new();
+    let mut popup = widgets::popup::Popup::new();
+    if let Some(w) = startup_warning {
+        popup.show(w);
+    }
 
     let mut dl = draw::DrawList::new();
     let start = Instant::now();
     let mut mods = ModifiersState::empty();
     let mut mouse = (0.0f32, 0.0f32);
+    let mut frame_counter: u64 = 0;
 
     event_loop
         .run(move |event, elwt| {
@@ -156,6 +176,9 @@ fn main() {
                     WindowEvent::ModifiersChanged(m) => mods = m.state(),
                     WindowEvent::CursorMoved { position, .. } => {
                         mouse = (position.x as f32, position.y as f32);
+                        if settings.open {
+                            settings.drag(mouse.0);
+                        }
                         // Pointer cursor over the terminal tabs.
                         let size = window.inner_size();
                         let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
@@ -194,12 +217,71 @@ fn main() {
                         }
                     }
                     WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        if settings.open && settings.release() {
+                                let (new_cfg, warn) = config::resolve();
+                                theme = new_cfg.theme;
+                                layout_spec = new_cfg.layout;
+                                if let Some(w) = warn {
+                                    popup.show(w);
+                                }
+                                let (tscale, tfam, twgt) = config::term_font_prefs();
+                                let (uscale, ufam, uwgt) = config::ui_font_prefs();
+                                font_scale = tscale;
+                                ui_font_scale = uscale;
+                                let tkey = (
+                                    tfam.clone().unwrap_or_default(),
+                                    twgt.clone().unwrap_or_default(),
+                                );
+                                if tkey != last_term_key {
+                                    last_term_key = tkey;
+                                    if tfam.is_none() && twgt.is_none() {
+                                        fonts.set_mono(font::load_default_mono());
+                                    } else if let Some(f) = font::load_variant_for(
+                                        tfam.as_deref(),
+                                        twgt.as_deref(),
+                                        false,
+                                    ) {
+                                        fonts.set_mono(f);
+                                    }
+                                }
+                                let ukey = (
+                                    ufam.clone().unwrap_or_default(),
+                                    uwgt.clone().unwrap_or_default(),
+                                );
+                                if ukey != last_ui_key {
+                                    last_ui_key = ukey;
+                                    if ufam.is_none() && uwgt.is_none() {
+                                        fonts.set_ui(font::load_default_ui());
+                                    } else if let Some(f) = font::load_variant_for(
+                                        ufam.as_deref(),
+                                        uwgt.as_deref(),
+                                        true,
+                                    ) {
+                                        fonts.set_ui(f);
+                                    }
+                                }
+                            }
+                    }
+                    WindowEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
                         ..
                     } => {
                         let size = window.inner_size();
                         let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
+                        // A click on the warning popup dismisses it.
+                        if popup.click(
+                            mouse.0,
+                            mouse.1,
+                            size.width as f32,
+                            size.height as f32,
+                        ) {
+                            return;
+                        }
                         // An open settings window captures all clicks.
                         if settings.open {
                             if settings.click(
@@ -208,11 +290,48 @@ fn main() {
                                 size.width as f32,
                                 size.height as f32,
                             ) {
-                                // Selection saved to ng-term.conf — re-resolve
-                                // the effective configuration and apply it live.
-                                let new_cfg = config::resolve();
+                                let (new_cfg, warn) = config::resolve();
                                 theme = new_cfg.theme;
                                 layout_spec = new_cfg.layout;
+                                if let Some(w) = warn {
+                                    popup.show(w);
+                                }
+                                let (tscale, tfam, twgt) = config::term_font_prefs();
+                                let (uscale, ufam, uwgt) = config::ui_font_prefs();
+                                font_scale = tscale;
+                                ui_font_scale = uscale;
+                                let tkey = (
+                                    tfam.clone().unwrap_or_default(),
+                                    twgt.clone().unwrap_or_default(),
+                                );
+                                if tkey != last_term_key {
+                                    last_term_key = tkey;
+                                    if tfam.is_none() && twgt.is_none() {
+                                        fonts.set_mono(font::load_default_mono());
+                                    } else if let Some(f) = font::load_variant_for(
+                                        tfam.as_deref(),
+                                        twgt.as_deref(),
+                                        false,
+                                    ) {
+                                        fonts.set_mono(f);
+                                    }
+                                }
+                                let ukey = (
+                                    ufam.clone().unwrap_or_default(),
+                                    uwgt.clone().unwrap_or_default(),
+                                );
+                                if ukey != last_ui_key {
+                                    last_ui_key = ukey;
+                                    if ufam.is_none() && uwgt.is_none() {
+                                        fonts.set_ui(font::load_default_ui());
+                                    } else if let Some(f) = font::load_variant_for(
+                                        ufam.as_deref(),
+                                        uwgt.as_deref(),
+                                        true,
+                                    ) {
+                                        fonts.set_ui(f);
+                                    }
+                                }
                             }
                             return;
                         }
@@ -334,6 +453,28 @@ fn main() {
                         }
                     }
                     WindowEvent::RedrawRequested => {
+                        // Live preview of the size sliders while dragging.
+                        if let Some((tscale, uscale)) = settings.live_scales() {
+                            font_scale = tscale;
+                            ui_font_scale = uscale;
+                        }
+                        // 0. Screen size can change at runtime (window moved to
+                        // another monitor) — re-check about once a second.
+                        frame_counter += 1;
+                        if frame_counter % 60 == 0 {
+                            if let Some(name) =
+                                window.current_monitor().and_then(|m| m.name())
+                            {
+                                if config::update_screen_for_monitor(&name) {
+                                    let (new_cfg, warn) = config::resolve();
+                                    theme = new_cfg.theme;
+                                    layout_spec = new_cfg.layout;
+                                    if let Some(w) = warn {
+                                        popup.show(w);
+                                    }
+                                }
+                            }
+                        }
                         // 1. PTY data for all sessions; exited sessions free their slot.
                         for slot in sessions.iter_mut() {
                             let exited = slot.as_mut().map(|s| s.pump()).unwrap_or(false);
@@ -373,6 +514,8 @@ fn main() {
                             h,
                             t: start.elapsed().as_secs_f64(),
                             mouse,
+                            term_font_scale: font_scale,
+                            ui_font_scale,
                         };
 
                         let booting = widgets::boot::draw(&mut ctx);
@@ -396,6 +539,8 @@ fn main() {
                             control.draw(&mut ctx, layout.control);
                             // Settings window drawn on top.
                             settings.draw(&mut ctx);
+                            // Warning popup on the very top.
+                            popup.draw(&mut ctx);
 
                             // Fit all session grids to the panel size.
                             if (cols, rows) != grid {
