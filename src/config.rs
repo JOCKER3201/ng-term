@@ -9,14 +9,13 @@
 //!       *.css       — symlink into themes/style/
 //!       *.layaut    — optional; without it the adaptive default is used
 //!
-//! EVERY layout (the built-in default and any .layaut file, authored at
-//! the 16:9 reference) is adapted CONTINUOUSLY to the screen: on landscape
-//! an edge-anchored transform keeps side columns at a constant absolute
-//! width for any aspect ratio; on portrait the visible panels are reflowed
-//! into a vertical stack (panels hidden in the base stay hidden). The
-//! screen is detected from EDID/mode data and re-checked at runtime when
-//! the window moves to another monitor. NGTERM_SCREEN= and NGTERM_ASPECT=
-//! override the detection.
+//! EVERY layout is computed from the ACTUAL window size every frame (see
+//! src/flex.rs): the built-in default is a responsive flexbox layout with
+//! real min/max column widths and collapse priorities — like a web page —
+//! and any .layaut file (authored at the 16:9 reference) is re-adapted to
+//! the window continuously (edge-anchored transform on landscape, a
+//! vertical restack on portrait). Resizing or moving the window reflows
+//! the interface live.
 //!
 //! In ng-term.conf the Look=<name> option picks a complete theme by the
 //! metafile's Name= field. The Style= and Layaut= options name files from
@@ -24,13 +23,13 @@
 //! missing options = defaults built into the code.
 
 use crate::theme::{Color, Theme};
-use crate::widgets::{LayoutSpec, PanelSpec};
+use crate::widgets::{LayoutMode, LayoutSpec, PanelSpec};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct Config {
     pub theme: Theme,
-    pub layout: LayoutSpec,
+    pub layout: LayoutMode,
 }
 
 /// Theme found in ~/.config/ng-term/themes (name from the metafile).
@@ -56,434 +55,6 @@ const BUILTIN_THEMES: [(&str, u8, u8, u8, &str, &str, &str, &str, &str); 10] = [
     ("tron", 170, 207, 209, "#05080d", "#262828", "#aacfd1", "#05080d", "#aacfd1"),
 ];
 
-/// Screen size categories (subdirectories of themes/look and themes/layauts).
-const CATEGORIES: [&str; 4] = ["normal", "big-screen", "small-screen", "ultra-small-screen"];
-
-/// Known aspect ratios in use today (directory name, ratio) — landscape,
-/// their portrait counterparts, and phone ratios (Android / mobile Linux).
-const ASPECTS: [(&str, f32); 22] = [
-    // Landscape.
-    ("16x9", 16.0 / 9.0),
-    ("16x10", 16.0 / 10.0),
-    ("21x9", 21.0 / 9.0),
-    ("32x9", 32.0 / 9.0),
-    ("4x3", 4.0 / 3.0),
-    ("3x2", 3.0 / 2.0),
-    ("5x4", 5.0 / 4.0),
-    // Phones in landscape.
-    ("18x9", 18.0 / 9.0),
-    ("19x9", 19.0 / 9.0),
-    ("19.5x9", 19.5 / 9.0),
-    ("20x9", 20.0 / 9.0),
-    // Portrait counterparts.
-    ("9x16", 9.0 / 16.0),
-    ("10x16", 10.0 / 16.0),
-    ("9x21", 9.0 / 21.0),
-    ("9x32", 9.0 / 32.0),
-    ("3x4", 3.0 / 4.0),
-    ("2x3", 2.0 / 3.0),
-    ("4x5", 4.0 / 5.0),
-    ("9x18", 9.0 / 18.0),
-    ("9x19", 9.0 / 19.0),
-    ("9x19.5", 9.0 / 19.5),
-    ("9x20", 9.0 / 20.0),
-];
-
-/// Nearest known aspect ratio for a width/height ratio.
-fn aspect_for_ratio(r: f32) -> &'static str {
-    ASPECTS
-        .iter()
-        .min_by(|a, b| {
-            (a.1 - r)
-                .abs()
-                .partial_cmp(&(b.1 - r).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(name, _)| *name)
-        .unwrap_or("16x9")
-}
-
-fn spec(x: f32, y: f32, w: f32, h: f32) -> PanelSpec {
-    PanelSpec { x, y, w, h }
-}
-
-/// Numeric ratio of the current (snapped) aspect.
-fn current_ratio() -> f32 {
-    ASPECTS
-        .iter()
-        .find(|(a, _)| *a == screen_aspect())
-        .map(|(_, r)| *r)
-        .unwrap_or(16.0 / 9.0)
-}
-
-/// Built-in main layout at the 16:9 reference, per screen size category.
-fn builtin_base(cat: &str) -> LayoutSpec {
-    match cat {
-        // Big screens: slimmer side columns, wider terminal.
-        "big-screen" => LayoutSpec {
-            left_col: spec(0.5, 2.5, 14.5, 59.5),
-            shell: spec(15.5, 2.5, 69.0, 60.3),
-            right_col: spec(85.0, 2.5, 14.5, 59.5),
-            filesystem: spec(85.0, 17.4, 14.5, 79.6),
-            keyboard: spec(15.5, 64.5, 69.0, 32.5),
-            control: spec(0.5, 64.5, 14.5, 32.5),
-        },
-        // Small screens: wider side columns, taller keyboard.
-        "small-screen" => LayoutSpec {
-            left_col: spec(0.5, 2.0, 19.0, 58.0),
-            shell: spec(20.0, 2.0, 60.0, 56.0),
-            right_col: spec(80.5, 2.0, 19.0, 58.0),
-            filesystem: spec(80.5, 16.9, 19.0, 80.1),
-            keyboard: spec(20.0, 60.0, 60.0, 37.0),
-            control: spec(0.5, 60.0, 19.0, 37.0),
-        },
-        // Ultra small screens: terminal + keyboard + control only.
-        "ultra-small-screen" => LayoutSpec {
-            left_col: spec(200.0, 0.0, 16.0, 60.0),
-            shell: spec(0.5, 1.5, 99.0, 53.5),
-            right_col: spec(200.0, 0.0, 16.0, 60.0),
-            filesystem: spec(200.0, 0.0, 16.0, 80.0),
-            keyboard: spec(0.5, 56.5, 99.0, 26.0),
-            control: spec(0.5, 84.0, 99.0, 13.5),
-        },
-        // Normal: the classic eDEX-style layout.
-        _ => LayoutSpec {
-            left_col: spec(0.6, 2.5, 16.4, 59.5),
-            shell: spec(17.5, 2.5, 65.0, 60.3),
-            right_col: spec(83.0, 2.5, 16.4, 59.5),
-            filesystem: spec(83.0, 17.4, 16.4, 79.6),
-            keyboard: spec(17.5, 64.5, 65.0, 32.5),
-            control: spec(0.6, 64.5, 16.4, 32.5),
-        },
-    }
-}
-
-fn on_screen(p: &PanelSpec) -> bool {
-    p.x < 100.0
-}
-
-/// Portrait reflow: the panels VISIBLE in the base layout are stacked
-/// vertically — terminal, keyboard, a row of side panels, control.
-/// Panels placed off-screen in the base stay hidden, so a minimal base
-/// automatically yields the phone arrangement.
-fn portrait_reflow(base: &LayoutSpec) -> LayoutSpec {
-    let off = spec(200.0, 0.0, 16.0, 60.0);
-    let small = matches!(
-        screen_category(),
-        "small-screen" | "ultra-small-screen"
-    );
-    let has_kb = on_screen(&base.keyboard);
-    let has_left = on_screen(&base.left_col);
-    let has_right = on_screen(&base.right_col);
-    let has_fs = on_screen(&base.filesystem);
-    let has_ctl = on_screen(&base.control);
-    let has_row = has_left || has_right || has_fs;
-
-    let kb_h = if has_kb {
-        if small { 31.0 } else { 18.5 }
-    } else {
-        0.0
-    };
-    let row_h = if has_row { 33.5 } else { 0.0 };
-    let ctl_bar_h = if has_ctl && !has_row { 13.5 } else { 0.0 };
-
-    let gap = 1.5f32;
-    let mut used = 0.0f32;
-    for h in [kb_h, row_h, ctl_bar_h] {
-        if h > 0.0 {
-            used += h + gap;
-        }
-    }
-    let shell_h = (97.0 - gap - used).max(20.0);
-
-    let mut out = LayoutSpec {
-        shell: spec(0.5, gap, 99.0, shell_h),
-        keyboard: off,
-        left_col: off,
-        right_col: off,
-        filesystem: off,
-        control: off,
-    };
-    let mut y = gap + shell_h + gap;
-    if has_kb {
-        out.keyboard = spec(0.5, y, 99.0, kb_h);
-        y += kb_h + gap;
-    }
-    if has_row {
-        // Side panels as columns of one row; control joins as a column.
-        let mut cols = 0;
-        if has_left {
-            cols += 1;
-        }
-        if has_right || has_fs {
-            cols += 1;
-        }
-        if has_ctl {
-            cols += 1;
-        }
-        let cw = (99.0 - (cols as f32 - 1.0)) / cols as f32;
-        let mut x = 0.5;
-        if has_left {
-            // The telemetry column gets a wider slot when possible.
-            let w = if cols == 3 { cw * 1.2 } else { cw };
-            out.left_col = spec(x, y, w, row_h);
-            x += w + 1.0;
-        }
-        if has_right || has_fs {
-            let w = cw;
-            if has_right {
-                out.right_col = spec(x, y, w, row_h);
-            }
-            if has_fs {
-                let fs_y = if has_right { y + 9.0 } else { y };
-                out.filesystem = spec(x, fs_y, w, row_h - (fs_y - y));
-            }
-            x += w + 1.0;
-        }
-        if has_ctl {
-            let w = (99.5 - x).max(10.0);
-            out.control = spec(x, y, w, row_h);
-        }
-    } else if has_ctl {
-        out.control = spec(0.5, y, 99.0, ctl_bar_h);
-    }
-    out
-}
-
-/// Continuous adaptation of ANY layout (authored at the 16:9 reference)
-/// to the current screen: on landscape screens an edge-anchored horizontal
-/// transform keeps side columns at a constant absolute width; on portrait
-/// screens the layout is reflowed into a vertical stack.
-fn adapt_spec(base: LayoutSpec) -> LayoutSpec {
-    let ratio = current_ratio();
-    if ratio < 1.0 {
-        return portrait_reflow(&base);
-    }
-    let f = ((16.0 / 9.0) / ratio).clamp(0.5, 1.4);
-    if (f - 1.0).abs() < 0.001 {
-        return base;
-    }
-    let tr = |p: &PanelSpec| -> PanelSpec {
-        if !on_screen(p) {
-            return *p;
-        }
-        let a = p.x;
-        let b = p.x + p.w;
-        let na = if a <= 50.0 { a * f } else { 100.0 - (100.0 - a) * f };
-        let nb = if b <= 50.0 { b * f } else { 100.0 - (100.0 - b) * f };
-        spec(na, p.y, (nb - na).max(1.0), p.h)
-    };
-    LayoutSpec {
-        left_col: tr(&base.left_col),
-        shell: tr(&base.shell),
-        right_col: tr(&base.right_col),
-        filesystem: tr(&base.filesystem),
-        keyboard: tr(&base.keyboard),
-        control: tr(&base.control),
-    }
-}
-
-/// Adaptive default layout: the built-in main layout adapted to the screen.
-pub fn adaptive_layout() -> LayoutSpec {
-    adapt_spec(builtin_base(screen_category()))
-}
-
-/// EDID diagonal in inches of a /sys/class/drm connector directory.
-fn edid_inches(dir: &Path) -> Option<f32> {
-    let edid = std::fs::read(dir.join("edid")).ok()?;
-    // EDID bytes 21/22: physical width/height in cm.
-    if edid.len() >= 23 {
-        let w = edid[21] as f32;
-        let h = edid[22] as f32;
-        if w > 0.0 && h > 0.0 {
-            return Some((w * w + h * h).sqrt() / 2.54);
-        }
-    }
-    None
-}
-
-/// Width/height ratio of a connector's preferred mode (first modes line).
-fn mode_ratio(dir: &Path) -> Option<f32> {
-    let modes = std::fs::read_to_string(dir.join("modes")).ok()?;
-    let first = modes.lines().next()?;
-    let (w, h) = first.split_once('x')?;
-    let w: f32 = w.trim().parse().ok()?;
-    let h: f32 = h.trim().parse().ok()?;
-    if h > 0.0 {
-        Some(w / h)
-    } else {
-        None
-    }
-}
-
-/// Connected display connectors: (sysfs dir, diagonal in inches).
-fn connected_displays() -> Vec<(PathBuf, f32)> {
-    let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir("/sys/class/drm") {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            let connected = std::fs::read_to_string(p.join("status"))
-                .map(|s| s.trim() == "connected")
-                .unwrap_or(false);
-            if connected {
-                if let Some(d) = edid_inches(&p) {
-                    out.push((p, d));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// The biggest connected display (sysfs dir, inches).
-fn best_display() -> Option<(PathBuf, f32)> {
-    connected_displays()
-        .into_iter()
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-}
-
-/// Screen diagonal in inches; with several displays the largest one wins.
-fn detect_screen_inches() -> Option<f32> {
-    best_display().map(|(_, d)| d)
-}
-
-/// Category for a given diagonal in inches.
-fn category_for_inches(d: f32) -> &'static str {
-    if d <= 10.0 {
-        "ultra-small-screen"
-    } else if d <= 20.0 {
-        "small-screen"
-    } else if d < 32.0 {
-        "normal"
-    } else {
-        "big-screen"
-    }
-}
-
-fn env_category() -> Option<&'static str> {
-    let v = std::env::var("NGTERM_SCREEN").ok()?;
-    CATEGORIES.iter().find(|c| **c == v).copied()
-}
-
-/// Active category index in CATEGORIES; usize::MAX = not initialized yet.
-static ACTIVE_CATEGORY: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(usize::MAX);
-
-fn set_category(cat: &'static str) {
-    if let Some(idx) = CATEGORIES.iter().position(|c| *c == cat) {
-        ACTIVE_CATEGORY.store(idx, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-/// Current screen size category; detected on first use, overridable with
-/// NGTERM_SCREEN=<category>, updated at runtime by update_category_for_monitor.
-pub fn screen_category() -> &'static str {
-    let idx = ACTIVE_CATEGORY.load(std::sync::atomic::Ordering::Relaxed);
-    if idx < CATEGORIES.len() {
-        return CATEGORIES[idx];
-    }
-    let cat = if let Some(c) = env_category() {
-        eprintln!("ng-term: screen category forced by NGTERM_SCREEN -> {c}");
-        c
-    } else {
-        let inches = detect_screen_inches();
-        let c = inches.map(category_for_inches).unwrap_or("normal");
-        match inches {
-            Some(d) => eprintln!("ng-term: screen {d:.1}\" -> {c}"),
-            None => eprintln!("ng-term: screen size unknown -> {c}"),
-        }
-        c
-    };
-    set_category(cat);
-    cat
-}
-
-/// Sysfs directory of a specific connector (e.g. "DP-2").
-fn connector_dir(connector: &str) -> Option<PathBuf> {
-    let suffix = format!("-{connector}");
-    std::fs::read_dir("/sys/class/drm")
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().ends_with(&suffix))
-                .unwrap_or(false)
-        })
-}
-
-/// Active aspect index in ASPECTS; usize::MAX = not initialized yet.
-static ACTIVE_ASPECT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(usize::MAX);
-
-fn set_aspect(aspect: &'static str) {
-    if let Some(idx) = ASPECTS.iter().position(|(a, _)| *a == aspect) {
-        ACTIVE_ASPECT.store(idx, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-fn env_aspect() -> Option<&'static str> {
-    let v = std::env::var("NGTERM_ASPECT").ok()?;
-    ASPECTS.iter().find(|(a, _)| *a == v).map(|(a, _)| *a)
-}
-
-/// Current screen aspect ratio; detected on first use, overridable with
-/// NGTERM_ASPECT=<name>, updated at runtime by update_screen_for_monitor.
-pub fn screen_aspect() -> &'static str {
-    let idx = ACTIVE_ASPECT.load(std::sync::atomic::Ordering::Relaxed);
-    if idx < ASPECTS.len() {
-        return ASPECTS[idx].0;
-    }
-    let aspect = if let Some(a) = env_aspect() {
-        eprintln!("ng-term: aspect ratio forced by NGTERM_ASPECT -> {a}");
-        a
-    } else {
-        let ratio = best_display().and_then(|(dir, _)| mode_ratio(&dir));
-        let a = ratio.map(aspect_for_ratio).unwrap_or("16x9");
-        match ratio {
-            Some(r) => eprintln!("ng-term: aspect ratio {r:.3} -> {a}"),
-            None => eprintln!("ng-term: aspect ratio unknown -> {a}"),
-        }
-        a
-    };
-    set_aspect(aspect);
-    aspect
-}
-
-/// Recomputes the size category and aspect ratio for the monitor the
-/// window currently sits on (connector name from the windowing system).
-/// Returns true when either changed. NGTERM_SCREEN / NGTERM_ASPECT pin
-/// their respective values permanently.
-pub fn update_screen_for_monitor(monitor_name: &str) -> bool {
-    // Windowing systems sometimes append details after the connector name.
-    let connector = monitor_name.split_whitespace().next().unwrap_or(monitor_name);
-    let Some(dir) = connector_dir(connector) else { return false };
-    let mut changed = false;
-
-    if env_category().is_none() {
-        if let Some(inches) = edid_inches(&dir) {
-            let cat = category_for_inches(inches);
-            if cat != screen_category() {
-                eprintln!("ng-term: screen changed: {connector} {inches:.1}\" -> {cat}");
-                set_category(cat);
-                changed = true;
-            }
-        }
-    }
-    if env_aspect().is_none() {
-        if let Some(ratio) = mode_ratio(&dir) {
-            let aspect = aspect_for_ratio(ratio);
-            if aspect != screen_aspect() {
-                eprintln!(
-                    "ng-term: aspect changed: {connector} {ratio:.3} -> {aspect}"
-                );
-                set_aspect(aspect);
-                changed = true;
-            }
-        }
-    }
-    changed
-}
 
 /// Directory with complete themes: ~/.config/ng-term/themes/look
 fn look_dir() -> PathBuf {
@@ -518,41 +89,22 @@ pub fn load() -> (Config, Option<String>) {
     resolve()
 }
 
-/// Layout by name: a custom file from themes/layauts, or — for "default"
-/// (when no such file exists) — the generated portrait file on portrait
-/// screens, then the adaptive layout computed in code.
-fn layaut_by_name(name: &str) -> Option<LayoutSpec> {
+/// Layout by name: a custom file from themes/layauts (a fixed 16:9 base,
+/// re-adapted to the window every frame), or — for "default" (when no such
+/// file exists) — the built-in responsive flexbox layout (src/flex.rs).
+fn layaut_by_name(name: &str) -> Option<LayoutMode> {
     if let Ok(text) = std::fs::read_to_string(layauts_dir().join(format!("{name}.layaut"))) {
-        return Some(parse_layaut(&text));
+        return Some(LayoutMode::Fixed(parse_layaut(&text)));
     }
     if name == "default" {
-        let ratio = ASPECTS
-            .iter()
-            .find(|(a, _)| *a == screen_aspect())
-            .map(|(_, r)| *r)
-            .unwrap_or(16.0 / 9.0);
-        if ratio < 1.0 {
-            let file = if matches!(
-                screen_category(),
-                "small-screen" | "ultra-small-screen"
-            ) {
-                "portrait-small.layaut"
-            } else {
-                "portrait.layaut"
-            };
-            if let Ok(text) = std::fs::read_to_string(layauts_dir().join(file)) {
-                return Some(parse_layaut(&text));
-            }
-        }
-        return Some(adaptive_layout());
+        return Some(LayoutMode::Flex);
     }
     None
 }
 
-/// The complete default theme for the current screen: the default style
-/// plus the default layout of the current aspect/size. The generator
-/// guarantees a default for every variant, so theme authors do not have
-/// to provide any variants themselves.
+/// The complete default theme: the default style plus the built-in
+/// responsive default layout, which adapts itself to any window — so
+/// theme authors never have to provide size variants.
 fn default_theme_config() -> Config {
     let theme = std::fs::read_to_string(style_dir().join("default.css"))
         .map(|s| parse_css(&s))
@@ -1056,9 +608,9 @@ fn load_theme(
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|css| parse_css(&css))
             .unwrap_or_else(Theme::tron);
-        // A symlinked layout is resolved BY NAME in the layouts directory
-        // of the current aspect ratio and screen size; a regular file is
-        // used directly. A missing variant switches to the default theme.
+        // A symlinked layout is resolved BY NAME in the layouts directory;
+        // a regular file is used directly. A missing layout switches to
+        // the default theme.
         let layout = match find_file(&dir, "layaut") {
             Some(p) => match std::fs::read_link(&p) {
                 Ok(target) => {
@@ -1079,7 +631,7 @@ fn load_theme(
                 }
                 Err(_) => std::fs::read_to_string(&p)
                     .ok()
-                    .map(|l| adapt_spec(parse_layaut(&l)))
+                    .map(|l| LayoutMode::Fixed(parse_layaut(&l)))
                     .unwrap_or_default(),
             },
             None => layaut_by_name("default").unwrap_or_default(),

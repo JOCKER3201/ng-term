@@ -4,6 +4,7 @@
 
 mod config;
 mod draw;
+mod flex;
 mod font;
 mod gfx;
 mod pty;
@@ -26,7 +27,6 @@ use winit::window::{CursorIcon, Fullscreen, WindowBuilder};
 
 use crate::pty::PtyEvent;
 use crate::widgets::shell::TAB_COUNT;
-use crate::widgets::Layout;
 
 /// One terminal session (tab): PTY + emulation + parser.
 struct Session {
@@ -159,7 +159,6 @@ fn main() {
     let start = Instant::now();
     let mut mods = ModifiersState::empty();
     let mut mouse = (0.0f32, 0.0f32);
-    let mut frame_counter: u64 = 0;
 
     event_loop
         .run(move |event, elwt| {
@@ -181,7 +180,7 @@ fn main() {
                         }
                         // Pointer cursor over the terminal tabs.
                         let size = window.inner_size();
-                        let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
                         let pointer = if settings.open {
                             settings.hover(mouse.0, mouse.1)
                         } else {
@@ -207,7 +206,7 @@ fn main() {
                             MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
                         };
                         let size = window.inner_size();
-                        let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
                         if layout.shell.contains(mouse.0, mouse.1) {
                             if let Some(s) = sessions[active].as_mut() {
                                 s.term.scroll_view((dy * 3.0) as i32);
@@ -272,7 +271,7 @@ fn main() {
                         ..
                     } => {
                         let size = window.inner_size();
-                        let layout = Layout::compute(size.width as f32, size.height as f32, &layout_spec);
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
                         // A click on the warning popup dismisses it.
                         if popup.click(
                             mouse.0,
@@ -458,23 +457,9 @@ fn main() {
                             font_scale = tscale;
                             ui_font_scale = uscale;
                         }
-                        // 0. Screen size can change at runtime (window moved to
-                        // another monitor) — re-check about once a second.
-                        frame_counter += 1;
-                        if frame_counter % 60 == 0 {
-                            if let Some(name) =
-                                window.current_monitor().and_then(|m| m.name())
-                            {
-                                if config::update_screen_for_monitor(&name) {
-                                    let (new_cfg, warn) = config::resolve();
-                                    theme = new_cfg.theme;
-                                    layout_spec = new_cfg.layout;
-                                    if let Some(w) = warn {
-                                        popup.show(w);
-                                    }
-                                }
-                            }
-                        }
+                        // The layout is recomputed from the window size every
+                        // frame (src/flex.rs), so moving the window to another
+                        // monitor or resizing it reflows the interface live.
                         // 1. PTY data for all sessions; exited sessions free their slot.
                         for slot in sessions.iter_mut() {
                             let exited = slot.as_mut().map(|s| s.pump()).unwrap_or(false);
@@ -520,7 +505,7 @@ fn main() {
 
                         let booting = widgets::boot::draw(&mut ctx);
                         if !booting {
-                            let layout = Layout::compute(w, h, &layout_spec);
+                            let layout = flex::compute(w, h, &layout_spec);
                             widgets::left::draw(&mut ctx, layout.left_col, &snap);
                             widgets::right::draw(&mut ctx, layout.right_col, &snap);
 

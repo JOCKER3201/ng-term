@@ -78,6 +78,23 @@ impl Default for LayoutSpec {
     }
 }
 
+/// How the panel layout is produced (see src/flex.rs).
+#[derive(Clone)]
+pub enum LayoutMode {
+    /// Built-in responsive default: a flexbox tree computed from the
+    /// actual window size every frame.
+    Flex,
+    /// A custom .layaut file: a fixed 16:9 base, re-adapted to the
+    /// window every frame.
+    Fixed(LayoutSpec),
+}
+
+impl Default for LayoutMode {
+    fn default() -> Self {
+        LayoutMode::Flex
+    }
+}
+
 /// Computed panel rectangles (in physical pixels).
 pub struct Layout {
     pub left_col: Rect,
