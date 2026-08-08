@@ -1,0 +1,19 @@
+# ng-term widget.
+#
+# The directory name is the widget's name — the name used in .layaut
+# files. Everything else is below. Removing this directory removes the
+# widget from the program; copying it under a new name adds one.
+#
+# This widget is drawn by compiled code: it keeps state and handles
+# input, which a description cannot express. Builtin= names that code.
+#
+# Label      shown in the layout editor
+# RefHeight  height (vh) at which it renders at 100% scale; growing the
+#            panel past it scales the whole widget, fonts included
+# MinHeight  minimum content height (vh) the layout engine keeps for it
+
+Label=SHELL
+Description=The terminal itself, with its session tabs.
+RefHeight=60.0
+MinHeight=10.0
+Builtin=shell

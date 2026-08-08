@@ -12,7 +12,7 @@
 //! selected layout), SAVE AS (asks for a name) and CANCEL (exits
 //! without saving).
 
-use super::{Ctx, Layout, LayoutSpec, Panel, PanelSpec, Rect, OFF_SPEC, PANEL_COUNT};
+use super::{panel_count, Ctx, Layout, LayoutSpec, Panel, PanelSpec, Rect, OFF_SPEC};
 use crate::font::FONT_UI;
 use std::time::Instant;
 
@@ -64,10 +64,10 @@ pub struct Editor {
     /// the inner content container on every side.
     padding: f32,
     /// Edited panel rects in percent of the window, Panel order.
-    rects: [PanelSpec; PANEL_COUNT],
+    rects: Vec<PanelSpec>,
     /// The rects as they were when the editor opened — SAVE stores only
     /// the panels that differ from this.
-    initial: [PanelSpec; PANEL_COUNT],
+    initial: Vec<PanelSpec>,
     drag: Option<(usize, Mode)>,
     /// SAVE AS name being typed; Some = the prompt is open.
     pub naming: Option<String>,
@@ -102,8 +102,8 @@ impl Editor {
             cols: 12,
             rows: 8,
             padding: 8.0,
-            rects: [OFF_SPEC; PANEL_COUNT],
-            initial: [OFF_SPEC; PANEL_COUNT],
+            rects: vec![OFF_SPEC; panel_count()],
+            initial: vec![OFF_SPEC; panel_count()],
             drag: None,
             naming: None,
             add_open: false,
@@ -135,11 +135,13 @@ impl Editor {
         self.add_open = false;
         self.adding = None;
         self.grow = None;
-        self.rects = std::array::from_fn(|i| pct(layout.panels[i], w, h));
+        self.rects = (0..panel_count())
+            .map(|i| pct(layout.panels[i], w, h))
+            .collect();
         if self.snap {
             self.snap_all(w, h);
         }
-        self.initial = self.rects;
+        self.initial = self.rects.clone();
     }
 
     pub fn stop(&mut self) {
@@ -178,19 +180,19 @@ impl Editor {
 
     /// The edited layout in window pixels (drawn instead of the normal one).
     pub fn layout(&self, w: f32, h: f32) -> Layout {
-        Layout { panels: std::array::from_fn(|i| self.px_rect(i, w, h)) }
+        Layout { panels: (0..panel_count()).map(|i| self.px_rect(i, w, h)).collect() }
     }
 
     /// The edited layout as a percent spec for saving.
     pub fn spec(&self) -> LayoutSpec {
-        LayoutSpec { panels: self.rects }
+        LayoutSpec { panels: self.rects.clone() }
     }
 
     /// Panels whose rectangles differ from the given reference spec
     /// (with a small tolerance) — the "only the changes" save payload.
     pub fn changes_vs(&self, reference: &LayoutSpec) -> Vec<(Panel, PanelSpec)> {
         let mut out = Vec::new();
-        for panel in Panel::ALL {
+        for panel in Panel::all() {
             let a = &self.rects[panel.idx()];
             let b = reference.p(panel);
             let both_hidden = a.x >= 100.0 && b.x >= 100.0;
@@ -207,7 +209,7 @@ impl Editor {
 
     /// Panels changed since the editor was opened.
     pub fn changes_since_start(&self) -> Vec<(Panel, PanelSpec)> {
-        self.changes_vs(&LayoutSpec { panels: self.initial })
+        self.changes_vs(&LayoutSpec { panels: self.initial.clone() })
     }
 
     fn save_buttons(w: f32, h: f32) -> [Rect; 6] {
@@ -363,7 +365,7 @@ impl Editor {
         if btns[4].contains(x, y) {
             // CANCEL — revert the unsaved changes, stay in the editor.
             self.flash = Some((4, Instant::now()));
-            self.rects = self.initial;
+            self.rects = self.initial.clone();
             self.drag = None;
             self.grow = None;
             return Some(EditorHit::Handled);
@@ -702,7 +704,7 @@ impl Editor {
                 }
             }
             let px = ctx.font_px(0.95);
-            let label = Panel::ALL[i].label();
+            let label = Panel(i as u16).label();
             let tw = ctx.fonts.measure(FONT_UI, px, label, px * 0.1);
             ctx.dl
                 .rect(r.x, r.y, tw + px * 1.2, px * 1.7, ctx.theme.bg.alpha(0.9));
@@ -820,7 +822,8 @@ impl Editor {
                 );
                 // Small name tag like on the panels.
                 let px = ctx.font_px(0.85);
-                let tw = ctx.fonts.measure(FONT_UI, px, Panel::ALL[panel].label(), px * 0.1);
+                let tw =
+                    ctx.fonts.measure(FONT_UI, px, Panel(panel as u16).label(), px * 0.1);
                 ctx.dl
                     .rect(ir.x, ir.y, tw + px * 1.2, px * 1.7, ctx.theme.bg.alpha(0.9));
                 ctx.dl.text(
@@ -829,7 +832,7 @@ impl Editor {
                     px,
                     ir.x + px * 0.6,
                     ir.y + px * 0.25,
-                    Panel::ALL[panel].label(),
+                    Panel(panel as u16).label(),
                     if hover || held { base } else { base.alpha(0.75) },
                     px * 0.1,
                 );

@@ -688,7 +688,7 @@ dependencies = [
 [[package]]
 name = "lib-ng-base"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-base#60f7d0f87bfda58e839d05a16c98b7119c768276"
+source = "git+https://github.com/JOCKER3201/lib-ng-base#6a190b2dbc44ff3d1134cac0d2a0cc84f23872ae"
 dependencies = [
  "fontdue",
  "serde_json",
@@ -708,12 +708,10 @@ dependencies = [
 [[package]]
 name = "lib-ng-widgets"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-widgets#d28506f6ff3889742dee6647a0456832125ee5f7"
+source = "git+https://github.com/JOCKER3201/lib-ng-widgets#18c2ddbf3e3c8e6e8cf9d9a12a73e038c8057387"
 dependencies = [
- "chrono",
  "lib-ng-base",
  "lib-ng-object",
- "unicode-width",
 ]
 
 [[package]]
@@ -851,6 +849,7 @@ dependencies = [
  "raw-window-handle",
  "sysinfo",
  "vte",
+ "widgets",
  "winit",
 ]
 
@@ -1680,6 +1679,18 @@ checksum = "aa30049b1c872b72c89866d458eae9f20380ab280ffd1b1e18df2d3e2d98cfe0"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "widgets"
+version = "0.1.0"
+source = "git+https://github.com/JOCKER3201/widgets#044939bfc48121e11f619d3ec51da3a70e9dba4d"
+dependencies = [
+ "chrono",
+ "lib-ng-base",
+ "lib-ng-object",
+ "lib-ng-widgets",
+ "unicode-width",
 ]
 
 [[package]]

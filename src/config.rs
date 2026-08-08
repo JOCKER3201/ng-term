@@ -51,7 +51,7 @@
 //! built into the code.
 
 use crate::theme::{Color, Theme};
-use crate::widgets::{FlexColumn, FlexLayaut, LayoutMode, LayoutSpec, Panel, PanelSpec};
+use crate::widgets::{FlexColumn, FlexLayaut, LayoutMode, LayoutSpec, Panel, PanelSpec, WidgetDef};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -147,6 +147,9 @@ pub fn list_themes() -> Vec<ThemeInfo> {
 
 pub fn load() -> (Config, Option<String>) {
     init_tree(&config_dir());
+    // The registry must exist before anything parses a layout: panels
+    // are resolved by name against it.
+    ng_base::base::set_registry(load_widget_registry());
     resolve()
 }
 
@@ -570,6 +573,122 @@ fn layauts_dir() -> PathBuf {
     data_dir().join("layauts")
 }
 
+/// Directory with widget descriptions: ~/.local/share/ng-term/widgets
+fn widgets_dir() -> PathBuf {
+    data_dir().join("widgets")
+}
+
+/// Builds the widget registry by scanning the widgets directory. Each
+/// subdirectory holding a "widget" file is one widget, and the DIRECTORY
+/// NAME is its name — so adding a widget means adding a directory, and
+/// removing one removes it from the program.
+///
+/// A directory that yields nothing usable falls back to the built-in
+/// set, so the program can never end up with no widgets at all.
+pub fn load_widget_registry() -> Vec<WidgetDef> {
+    let out = scan_widget_dir(&widgets_dir());
+    if !out.is_empty() {
+        eprintln!(
+            "ng-term: {} widgets from {}",
+            out.len(),
+            widgets_dir().display()
+        );
+        return out;
+    }
+    if out.is_empty() {
+        eprintln!(
+            "ng-term: no widgets found in {} \u{2014} using the built-in set",
+            widgets_dir().display()
+        );
+        return ng_base::base::builtin_widgets();
+    }
+    out
+}
+
+/// The scan itself, over an explicit directory.
+fn scan_widget_dir(dir: &Path) -> Vec<WidgetDef> {
+    let mut out: Vec<WidgetDef> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        // Sorted, so panel order does not depend on the filesystem.
+        dirs.sort();
+        for dir in dirs {
+            let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = safe_component(name) else { continue };
+            let Ok(text) = std::fs::read_to_string(dir.join("widget")) else { continue };
+            let kv = parse_kv(&text);
+            let num = |key: &str, def: f32| {
+                kv.get(key)
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+                    .filter(|x| x.is_finite() && *x > 0.0)
+                    .unwrap_or(def)
+            };
+            let label = kv
+                .get("Label")
+                .filter(|l| !l.is_empty())
+                .cloned()
+                .unwrap_or_else(|| name.to_uppercase());
+            let builtin = kv
+                .get("Builtin")
+                .map(|b| b.trim())
+                .filter(|b| !b.is_empty())
+                .map(|b| b.to_string());
+            out.push(WidgetDef {
+                name,
+                label,
+                ref_h_vh: num("RefHeight", 10.0),
+                min_h_vh: num("MinHeight", 6.0),
+                builtin,
+            });
+        }
+    }
+    out
+}
+
+/// Writes a description file for every built-in widget that is MISSING,
+/// on the same terms as the styles and sounds: presence by name only, so
+/// an edited file stays the user's and a deleted one comes back.
+fn restore_builtin_widgets(dir: &Path) {
+    for def in ng_base::base::builtin_widgets() {
+        let wd = dir.join(&def.name);
+        if std::fs::create_dir_all(&wd).is_err() {
+            continue;
+        }
+        let file = wd.join("widget");
+        if file.exists() {
+            continue;
+        }
+        let builtin = match &def.builtin {
+            Some(b) => format!("Builtin={b}\n"),
+            None => String::new(),
+        };
+        let _ = std::fs::write(
+            &file,
+            format!(
+                "# ng-term widget.\n\
+                 #\n\
+                 # The directory name is the widget's name \u{2014} the name used in\n\
+                 # .layaut files. Removing this directory removes the widget from\n\
+                 # the program; copying it under a new name adds one.\n\
+                 #\n\
+                 # Label      shown in the layout editor\n\
+                 # RefHeight  height (vh) at which it renders at 100% scale\n\
+                 # MinHeight  minimum content height (vh) kept by the layout engine\n\
+                 \n\
+                 Label={}\n\
+                 RefHeight={}\n\
+                 MinHeight={}\n\
+                 {}",
+                def.label, def.ref_h_vh, def.min_h_vh, builtin
+            ),
+        );
+    }
+}
+
 /// Directory with sound themes: ~/.local/share/ng-term/sounds
 fn sounds_dir() -> PathBuf {
     data_dir().join("sounds")
@@ -822,7 +941,7 @@ fn serialize_base(spec: &LayoutSpec, key: (u32, u32, u32)) -> String {
          # Format: <panel> = x y w h (percent of the window).\n",
     );
     out.push_str(&format!("screen = {}x{}@{}\n", key.0, key.1, key.2));
-    for panel in Panel::ALL {
+    for panel in Panel::all() {
         let ps = spec.p(panel);
         out.push_str(&format!(
             "{} = {:.2} {:.2} {:.2} {:.2}\n",
@@ -1016,7 +1135,8 @@ fn init_tree(dir: &Path) {
     let style = data.join("style");
     let layauts = data.join("layauts");
     let sounds = data.join("sounds");
-    for d in [&look, &style, &layauts, &sounds] {
+    let widgets = data.join("widgets");
+    for d in [&look, &style, &layauts, &sounds, &widgets] {
         if let Err(e) = std::fs::create_dir_all(d) {
             eprintln!("ng-term: cannot create {}: {e}", d.display());
             return;
@@ -1079,6 +1199,7 @@ fn init_tree(dir: &Path) {
     }
 
     restore_builtin_themes(&look, &style);
+    restore_builtin_widgets(&widgets);
     seed_sound_themes(&sounds);
     link_default_sounds(&look, &sounds);
 }
@@ -1745,6 +1866,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Test widgets, resolved by name against the registry the same way
+    /// the rest of the program does.
+    fn wp(name: &str) -> Panel {
+        Panel::from_name(name).expect("built-in widget must be registered")
+    }
+
+    /// The registry is built from the directory: a description file
+    /// defines a widget, its directory name IS its name, and an empty
+    /// directory falls back to the built-in set rather than to nothing.
+    #[test]
+    fn widget_registry_reads_the_directory() {
+        let root = std::env::temp_dir().join("ng-term-widget-registry-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("mywidget")).unwrap();
+        std::fs::write(
+            root.join("mywidget").join("widget"),
+            "Label=MY WIDGET\nRefHeight=9.5\nMinHeight=4\n",
+        )
+        .unwrap();
+        // A directory without a description file is not a widget.
+        std::fs::create_dir_all(root.join("notawidget")).unwrap();
+        // A built-in, to check Builtin= is carried through.
+        std::fs::create_dir_all(root.join("shell")).unwrap();
+        std::fs::write(root.join("shell").join("widget"), "Builtin=shell\n").unwrap();
+
+        let defs = scan_widget_dir(&root);
+        assert_eq!(defs.len(), 2, "only directories with a description count");
+        // Sorted, so panel order never depends on the filesystem.
+        assert_eq!(defs[0].name, "mywidget");
+        assert_eq!(defs[0].label, "MY WIDGET");
+        assert_eq!(defs[0].ref_h_vh, 9.5);
+        assert!(defs[0].builtin.is_none());
+        assert_eq!(defs[1].name, "shell");
+        assert_eq!(defs[1].builtin.as_deref(), Some("shell"));
+        // A label-less widget falls back to its own name.
+        assert_eq!(defs[1].label, "SHELL");
+
+        assert!(scan_widget_dir(&root.join("nope")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The built-in widget list exists twice: as the fallback in code
+    /// and as the description files that are installed and scanned. They
+    /// must not drift apart, or the fallback would describe a different
+    /// program than the files do.
+    #[test]
+    fn builtin_widgets_match_their_description_files() {
+        let dir = Path::new("assets/widgets");
+        let files = scan_widget_dir(dir);
+        assert!(!files.is_empty(), "assets/widgets must ship descriptions");
+        let code = ng_base::base::builtin_widgets();
+        assert_eq!(code.len(), files.len(), "widget counts differ");
+        for c in &code {
+            let f = files
+                .iter()
+                .find(|f| f.name == c.name)
+                .unwrap_or_else(|| panic!("no description file for '{}'", c.name));
+            assert_eq!(f.label, c.label, "label of '{}'", c.name);
+            assert_eq!(f.ref_h_vh, c.ref_h_vh, "RefHeight of '{}'", c.name);
+            assert_eq!(f.min_h_vh, c.min_h_vh, "MinHeight of '{}'", c.name);
+            assert_eq!(f.builtin, c.builtin, "Builtin of '{}'", c.name);
+        }
+    }
+
     #[test]
     fn overrides_roundtrip() {
         let name = "unittest-roundtrip";
@@ -1753,8 +1938,8 @@ mod tests {
 
         // SAVE AS on a 2560x1440 32" screen: the full base.
         let mut full = LayoutSpec::default();
-        full.set(Panel::Clock, PanelSpec { x: 1.0, y: 2.0, w: 10.0, h: 10.0 });
-        full.set(Panel::Shell, PanelSpec { x: 20.0, y: 2.0, w: 60.0, h: 60.0 });
+        full.set(wp("clock"), PanelSpec { x: 1.0, y: 2.0, w: 10.0, h: 10.0 });
+        full.set(wp("shell"), PanelSpec { x: 20.0, y: 2.0, w: 60.0, h: 60.0 });
         save_layaut_full(name, &full, (2560, 1440, 32)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("screen = 2560x1440@32"));
@@ -1762,7 +1947,7 @@ mod tests {
 
         // SAVE on the SAME screen: the base itself is rewritten in full.
         let mut full2 = full.clone();
-        full2.set(Panel::Clock, PanelSpec { x: 3.0, y: 4.0, w: 11.0, h: 11.0 });
+        full2.set(wp("clock"), PanelSpec { x: 3.0, y: 4.0, w: 11.0, h: 11.0 });
         save_layaut_overrides(name, (2560, 1440, 32), &[], &full2).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("clock = 3.00 4.00 11.00 11.00"));
@@ -1773,7 +1958,7 @@ mod tests {
         save_layaut_overrides(
             name,
             (1920, 1080, 27),
-            &[(Panel::Filesystem, fs_spec)],
+            &[(wp("filesystem"), fs_spec)],
             &full2,
         )
         .unwrap();
@@ -1782,7 +1967,7 @@ mod tests {
         save_layaut_overrides(
             name,
             (1280, 720, 7),
-            &[(Panel::Keyboard, kb_spec)],
+            &[(wp("keyboard"), kb_spec)],
             &full2,
         )
         .unwrap();
@@ -1791,7 +1976,7 @@ mod tests {
         save_layaut_overrides(
             name,
             (1920, 1080, 27),
-            &[(Panel::Filesystem, fs_spec2)],
+            &[(wp("filesystem"), fs_spec2)],
             &full2,
         )
         .unwrap();
@@ -1807,11 +1992,11 @@ mod tests {
         let big = def.pick((1920, 1080, 27)).unwrap();
         assert_eq!(big.panels.len(), 1);
         let (p, ps) = &big.panels[0];
-        assert_eq!(*p, Panel::Filesystem);
+        assert_eq!(*p, wp("filesystem"));
         assert!((ps.x - 40.0).abs() < 0.01 && (ps.h - 44.0).abs() < 0.01);
         let small = def.pick((1280, 720, 7)).unwrap();
         assert_eq!(small.panels.len(), 1);
-        assert_eq!(small.panels[0].0, Panel::Keyboard);
+        assert_eq!(small.panels[0].0, wp("keyboard"));
 
         std::fs::remove_file(&path).unwrap();
     }

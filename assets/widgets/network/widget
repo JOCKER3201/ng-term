@@ -1,0 +1,18 @@
+# ng-term widget.
+#
+# The directory name is the widget's name — the name used in .layaut
+# files. Everything else is below. Removing this directory removes the
+# widget from the program; copying it under a new name adds one.
+#
+# This widget only displays data, so in time it will be described here
+# rather than compiled in.
+#
+# Label      shown in the layout editor
+# RefHeight  height (vh) at which it renders at 100% scale; growing the
+#            panel past it scales the whole widget, fonts included
+# MinHeight  minimum content height (vh) the layout engine keeps for it
+
+Label=NETWORK
+Description=Interface, address, ping and online state.
+RefHeight=12.4
+MinHeight=8.0

@@ -216,6 +216,17 @@ fn main() {
         popup.show(w);
     }
 
+    // Handles of the interactive built-ins, resolved once. A registry
+    // without one of them yields an index past its end, whose rectangle
+    // is off-screen — so the widget simply never appears.
+    let pnl = |name: &str| {
+        widgets::Panel::from_name(name).unwrap_or(widgets::Panel(u16::MAX))
+    };
+    let p_shell = pnl("shell");
+    let p_keyboard = pnl("keyboard");
+    let p_filesystem = pnl("filesystem");
+    let p_control = pnl("control");
+
     let mut dl = draw::DrawList::new();
     let start = Instant::now();
     let mut mods = ModifiersState::empty();
@@ -272,11 +283,11 @@ fn main() {
                             settings.hover(mouse.0, mouse.1)
                         } else {
                             let over_tab =
-                                widgets::shell::tab_rects(layout.p(widgets::Panel::Shell), size.height as f32)
+                                widgets::shell::tab_rects(layout.p(p_shell), size.height as f32)
                                     .iter()
                                     .any(|tr| tr.contains(mouse.0, mouse.1));
                             let over_btn =
-                                widgets::control::button_rects(layout.p(widgets::Panel::Control), size.height as f32)
+                                widgets::control::button_rects(layout.p(p_control), size.height as f32)
                                     .iter()
                                     .any(|br| br.contains(mouse.0, mouse.1));
                             over_tab || over_btn
@@ -304,11 +315,11 @@ fn main() {
                             ui_padding,
                         )
                         .padded(ui_padding);
-                        if layout.p(widgets::Panel::Shell).contains(mouse.0, mouse.1) {
+                        if layout.p(p_shell).contains(mouse.0, mouse.1) {
                             if let Some(s) = sessions[active].as_mut() {
                                 s.term.scroll_view((dy * 3.0) as i32);
                             }
-                        } else if layout.p(widgets::Panel::Filesystem).contains(mouse.0, mouse.1) {
+                        } else if layout.p(p_filesystem).contains(mouse.0, mouse.1) {
                             fsp.wheel(dy * 40.0);
                         }
                     }
@@ -588,7 +599,7 @@ fn main() {
                             return;
                         }
                         // Terminal tabs: switching / opening a new session.
-                        let tab_hit = widgets::shell::tab_rects(layout.p(widgets::Panel::Shell), size.height as f32)
+                        let tab_hit = widgets::shell::tab_rects(layout.p(p_shell), size.height as f32)
                             .iter()
                             .position(|tr| tr.contains(mouse.0, mouse.1));
                         if let Some(i) = tab_hit {
@@ -605,14 +616,14 @@ fn main() {
                                     Err(e) => eprintln!("ng-term: cannot open PTY: {e}"),
                                 }
                             }
-                        } else if layout.p(widgets::Panel::Keyboard).contains(mouse.0, mouse.1) {
+                        } else if layout.p(p_keyboard).contains(mouse.0, mouse.1) {
                             if let Some(bytes) = kb.click(mouse.0, mouse.1) {
                                 if let Some(s) = sessions[active].as_mut() {
                                     s.pty.write(&bytes);
                                     s.term.view_offset = 0;
                                 }
                             }
-                        } else if layout.p(widgets::Panel::Filesystem).contains(mouse.0, mouse.1) {
+                        } else if layout.p(p_filesystem).contains(mouse.0, mouse.1) {
                             let hit = fsp.click(mouse.0, mouse.1);
                             if hit.is_some() {
                                 ng_base::sound::emit(ng_base::sound::Event::Click);
@@ -640,7 +651,7 @@ fn main() {
                                 None => {}
                             }
                         } else if let Some(btn) =
-                            control.click(mouse.0, mouse.1, layout.p(widgets::Panel::Control), size.height as f32)
+                            control.click(mouse.0, mouse.1, layout.p(p_control), size.height as f32)
                         {
                             ng_base::sound::emit(ng_base::sound::Event::Click);
                             match btn {
@@ -833,63 +844,45 @@ fn main() {
                                 )
                             }
                             .padded(ui_padding);
-                            // Telemetry widgets — each an individual panel;
-                            // their text scales with the panel width.
-                            use widgets::Panel as P;
-                            {
-                                let tele: [(P, fn(&mut widgets::Ctx, widgets::Rect, &system::Snapshot)); 5] = [
-                                    (P::Clock, widgets::clock::draw),
-                                    (P::Sysinfo, widgets::sysinfo::draw),
-                                    (P::Hardware, widgets::hardware::draw),
-                                    (P::Cpu, widgets::cpu::draw),
-                                    (P::Memory, widgets::memory::draw),
-                                ];
-                                for (panel, f) in tele {
-                                    let r = layout.p(panel);
-                                    ctx.panel_scale = ctx.panel_font_scale(&r, panel);
-                                    f(&mut ctx, r, &snap);
-                                    ctx.panel_scale = 1.0;
+                            // Every registered widget that is not one of
+                            // the interactive built-ins, drawn straight
+                            // from the registry — the set comes from the
+                            // widgets directory, not from this list.
+                            for panel in widgets::Panel::all() {
+                                if panel.builtin().is_some() {
+                                    continue;
                                 }
-                                let r = layout.p(P::Processes);
-                                ctx.panel_scale = ctx.panel_font_scale(&r, P::Processes);
-                                widgets::processes::draw(&mut ctx, r, &snap);
+                                let r = layout.p(panel);
+                                ctx.panel_scale = ctx.panel_font_scale(&r, panel);
+                                draw_described(&mut ctx, panel, r, &snap);
                                 ctx.panel_scale = 1.0;
                             }
-                            widgets::network::draw(&mut ctx, layout.p(P::Network), &snap);
 
+                            // The interactive widgets each need their own
+                            // state, so they keep individual call sites.
                             let occupied: [bool; TAB_COUNT] =
                                 std::array::from_fn(|i| sessions[i].is_some());
                             let active_term = &sessions[active].as_ref().unwrap().term;
                             let (cols, rows) = widgets::shell::draw(
                                 &mut ctx,
-                                layout.p(P::Shell),
+                                layout.p(p_shell),
                                 active_term,
                                 &occupied,
                                 active,
                             );
-                            fsp.draw(&mut ctx, layout.p(P::Filesystem));
-                            kb.draw(&mut ctx, layout.p(P::Keyboard));
-                            control.draw(&mut ctx, layout.p(P::Control));
+                            fsp.draw(&mut ctx, layout.p(p_filesystem));
+                            kb.draw(&mut ctx, layout.p(p_keyboard));
+                            control.draw(&mut ctx, layout.p(p_control));
                             // Settings window drawn on top.
                             // Grid overlay + editor controls on top of the
                             // live panels. The closure draws live widget
                             // miniatures inside the ADD WIDGET window.
                             if editor.active {
                                 editor.draw(&mut ctx, |ctx, panel, r| {
-                                    ctx.panel_scale =
-                                        ctx.panel_font_scale(&r, widgets::Panel::ALL[panel]);
-                                    match widgets::Panel::ALL[panel] {
-                                        P::Clock => widgets::clock::draw(ctx, r, &snap),
-                                        P::Sysinfo => widgets::sysinfo::draw(ctx, r, &snap),
-                                        P::Hardware => {
-                                            widgets::hardware::draw(ctx, r, &snap)
-                                        }
-                                        P::Cpu => widgets::cpu::draw(ctx, r, &snap),
-                                        P::Memory => widgets::memory::draw(ctx, r, &snap),
-                                        P::Processes => {
-                                            widgets::processes::draw(ctx, r, &snap)
-                                        }
-                                        P::Shell => {
+                                    let p = widgets::Panel(panel as u16);
+                                    ctx.panel_scale = ctx.panel_font_scale(&r, p);
+                                    match p.builtin() {
+                                        Some("shell") => {
                                             let _ = widgets::shell::draw(
                                                 ctx,
                                                 r,
@@ -898,10 +891,11 @@ fn main() {
                                                 active,
                                             );
                                         }
-                                        P::Network => widgets::network::draw(ctx, r, &snap),
-                                        P::Filesystem => fsp.draw(ctx, r),
-                                        P::Keyboard => kb.draw(ctx, r),
-                                        P::Control => control.draw(ctx, r),
+                                        Some("filesystem") => fsp.draw(ctx, r),
+                                        Some("keyboard") => kb.draw(ctx, r),
+                                        Some("control") => control.draw(ctx, r),
+                                        Some(_) => {}
+                                        None => draw_described(ctx, p, r, &snap),
                                     }
                                     ctx.panel_scale = 1.0;
                                 });
@@ -980,6 +974,29 @@ fn main() {
             }
         })
         .expect("event loop ended with an error");
+}
+
+/// Draws a widget that has no compiled renderer of its own. Until the
+/// description language can express them, the data widgets are still
+/// drawn by compiled code, selected by the NAME the registry gives them
+/// rather than by a fixed enum — so a renamed or removed widget changes
+/// nothing here, and an unknown name simply draws nothing.
+fn draw_described(
+    ctx: &mut widgets::Ctx,
+    panel: widgets::Panel,
+    r: widgets::Rect,
+    snap: &system::Snapshot,
+) {
+    match panel.name() {
+        "clock" => widgets::clock::draw(ctx, r, snap),
+        "sysinfo" => widgets::sysinfo::draw(ctx, r, snap),
+        "hardware" => widgets::hardware::draw(ctx, r, snap),
+        "cpu" => widgets::cpu::draw(ctx, r, snap),
+        "memory" => widgets::memory::draw(ctx, r, snap),
+        "processes" => widgets::processes::draw(ctx, r, snap),
+        "network" => widgets::network::draw(ctx, r, snap),
+        _ => {}
+    }
 }
 
 /// The current screen key: monitor resolution + diagonal in inches.

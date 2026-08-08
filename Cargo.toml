@@ -14,8 +14,12 @@ lib-ng-base = { git = "https://github.com/JOCKER3201/lib-ng-base" }
 # Interface objects: windows, dialogs, buttons, sliders, dropdowns, checkboxes
 lib-ng-object = { git = "https://github.com/JOCKER3201/lib-ng-object" }
 
-# The widgets themselves
+# The widget framework: the Widget contract, the host/action boundary
+# and the shared drawing vocabulary.
 lib-ng-widgets = { git = "https://github.com/JOCKER3201/lib-ng-widgets" }
+
+# The widgets shipped with the program.
+widgets = { git = "https://github.com/JOCKER3201/widgets" }
 
 # Window + events (Linux: Wayland/X11 backends)
 winit = "0.29"

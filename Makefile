@@ -15,6 +15,7 @@ endif
 BINDIR     = $(DESTDIR)$(PREFIX)/bin
 FONTDIR    = $(DESTDIR)$(PREFIX)/share/fonts/ng-term
 SOUNDDIR   = $(DESTDIR)$(PREFIX)/share/ng-term/sounds
+WIDGETDIR  = $(DESTDIR)$(PREFIX)/share/ng-term/widgets
 APPDIR     = $(DESTDIR)$(PREFIX)/share/applications
 ICONDIR    = $(DESTDIR)$(PREFIX)/share/icons/hicolor
 ICON_SIZES = 48 64 128 256 512
@@ -61,6 +62,20 @@ install:
 		done; \
 		echo "sound theme $$name: $$n installed, $$kept kept"; \
 	done; true
+	@# Widget descriptions from ./assets/widgets — one directory per
+	@# widget, scanned at startup to build the widget registry. Same
+	@# missing-file-only rule as the sounds.
+	@for d in assets/widgets/*/; do \
+		[ -d "$$d" ] || continue; \
+		name=$$(basename "$$d"); \
+		mkdir -p "$(WIDGETDIR)/$$name"; \
+		for f in "$$d"*; do \
+			[ -f "$$f" ] || continue; \
+			dest="$(WIDGETDIR)/$$name/$$(basename "$$f")"; \
+			[ -e "$$dest" ] && continue; \
+			install -m644 "$$f" "$$dest"; \
+		done; \
+	done; echo "installed widget descriptions"
 	@# Icons (hicolor) + .desktop file with the binary path substituted.
 	@for s in $(ICON_SIZES); do \
 		install -Dm644 "assets/ng-term-$$s.png" \
