@@ -726,7 +726,7 @@ dependencies = [
 [[package]]
 name = "lib-ng"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng#56bbcc7f3dec07c3f3adf439af87325c333a5656"
+source = "git+https://github.com/JOCKER3201/lib-ng#a8be41226bea90adcfa1bd54179c999f59a6fe65"
 dependencies = [
  "chrono",
  "fontdue",
