@@ -38,6 +38,8 @@ impl Control {
     }
 
     pub fn draw(&mut self, ctx: &mut Ctx, r: Rect) {
+        // Text scales with the panel width (container-query style).
+        ctx.panel_scale = ctx.panel_font_scale(&r);
         let base = ctx.theme.base;
         let title_px = ctx.font_px(1.02);
         ctx.dl.module_title(
@@ -101,5 +103,6 @@ impl Control {
                 px * 0.1,
             );
         }
+        ctx.panel_scale = 1.0;
     }
 }

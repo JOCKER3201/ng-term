@@ -1,27 +1,13 @@
-//! Right column: network status.
+//! Network widget: column header with the interface name and the
+//! NETWORK STATUS block (state, IPv4, ping).
 
-use super::{Ctx, Rect};
+use super::{fit_end, Ctx, Rect};
 use crate::font::FONT_UI;
 use crate::system::Snapshot;
 
-/// Trims text (with a trailing ellipsis) so it fits the given width.
-fn fit_end(ctx: &mut Ctx, px: f32, text: &str, max_w: f32) -> String {
-    if ctx.fonts.measure(FONT_UI, px, text, px * 0.06) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut n = chars.len().saturating_sub(1);
-    while n > 1 {
-        let cand: String = chars[..n].iter().collect::<String>() + "\u{2026}";
-        if ctx.fonts.measure(FONT_UI, px, &cand, px * 0.06) <= max_w {
-            return cand;
-        }
-        n -= 1;
-    }
-    "\u{2026}".to_string()
-}
-
 pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
+    // Text scales with the panel width (container-query style).
+    ctx.panel_scale = ctx.panel_font_scale(&col);
     let title_px = ctx.font_px(1.02);
     ctx.dl.module_title(
         ctx.fonts,
@@ -34,10 +20,11 @@ pub fn draw(ctx: &mut Ctx, col: Rect, snap: &Snapshot) {
         ctx.theme.base,
     );
 
-    // Gap from the column header equal to the gap between other modules.
+    // Gap from the column header equal to the gap between other modules;
+    // the status rows fill the rest of the panel.
     let top = col.y + ctx.vh(1.8);
-    let h = col.h * 0.20;
-    netstat(ctx, Rect::new(col.x, top, col.w, h), snap);
+    netstat(ctx, Rect::new(col.x, top, col.w, col.h - (top - col.y)), snap);
+    ctx.panel_scale = 1.0;
 }
 
 fn netstat(ctx: &mut Ctx, r: Rect, snap: &Snapshot) {

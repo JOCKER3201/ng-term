@@ -10,12 +10,25 @@
 //!       *.layaut    — optional; without it the adaptive default is used
 //!
 //! EVERY layout is computed from the ACTUAL window size every frame (see
-//! src/flex.rs): the built-in default is a responsive flexbox layout with
-//! real min/max column widths and collapse priorities — like a web page —
-//! and any .layaut file (authored at the 16:9 reference) is re-adapted to
-//! the window continuously (edge-anchored transform on landscape, a
-//! vertical restack on portrait). Resizing or moving the window reflows
-//! the interface live.
+//! src/flex.rs), so resizing or moving the window reflows the interface
+//! live. Layout files come in two formats:
+//!
+//! Flexbox (recommended) — CSS-like columns, same engine as the built-in
+//! default (min/max widths, collapse priorities, portrait restack):
+//!   [column]            # columns are laid out left to right
+//!   basis = 16.4        # preferred width, % of the row (flex-basis)
+//!   min = 168           # min-width in px
+//!   max = 340           # max-width in px (omit = unlimited)
+//!   grow = 0            # share of leftover space (flex-grow)
+//!   collapse = 2        # 1 disappears first when space runs out; 0 = never
+//!   gap = 2.5           # vertical gap between panels (weight units)
+//!   panel = left_col 59.5   # panels top->bottom with height weights
+//!   panel = control 32.5
+//! Panels: left_col, shell, right_col, filesystem, keyboard, control.
+//!
+//! Legacy — "<panel> = x y w h" percentages at the 16:9 reference,
+//! re-adapted to the window continuously (edge-anchored transform on
+//! landscape, a vertical restack on portrait).
 //!
 //! In ng-term.conf the Look=<name> option picks a complete theme by the
 //! metafile's Name= field. The Style= and Layaut= options name files from
@@ -23,7 +36,7 @@
 //! missing options = defaults built into the code.
 
 use crate::theme::{Color, Theme};
-use crate::widgets::{LayoutMode, LayoutSpec, PanelSpec};
+use crate::widgets::{FlexColumn, FlexLayaut, LayoutMode, LayoutSpec, Panel, PanelSpec};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -89,17 +102,84 @@ pub fn load() -> (Config, Option<String>) {
     resolve()
 }
 
-/// Layout by name: a custom file from themes/layauts (a fixed 16:9 base,
-/// re-adapted to the window every frame), or — for "default" (when no such
-/// file exists) — the built-in responsive flexbox layout (src/flex.rs).
+/// Layout by name: a custom file from themes/layauts — flexbox format
+/// ([column] sections) or the legacy fixed format — or, for "default"
+/// (when no such file exists), the built-in flexbox layout (src/flex.rs).
 fn layaut_by_name(name: &str) -> Option<LayoutMode> {
     if let Ok(text) = std::fs::read_to_string(layauts_dir().join(format!("{name}.layaut"))) {
+        if text.contains("[column]") {
+            return Some(match parse_flex_layaut(&text) {
+                Some(fl) => LayoutMode::Custom(fl),
+                None => {
+                    eprintln!("ng-term: no valid columns in '{name}.layaut' — using the default layout");
+                    LayoutMode::Flex
+                }
+            });
+        }
         return Some(LayoutMode::Fixed(parse_layaut(&text)));
     }
     if name == "default" {
         return Some(LayoutMode::Flex);
     }
     None
+}
+
+/// Parses the flexbox .layaut format (see the module header).
+fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
+    let mut columns: Vec<FlexColumn> = Vec::new();
+    let mut cur: Option<FlexColumn> = None;
+    for line in src.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("[column]") {
+            if let Some(c) = cur.take() {
+                columns.push(c);
+            }
+            cur = Some(FlexColumn {
+                basis: 20.0,
+                min: 60.0,
+                max: f32::INFINITY,
+                grow: 0.0,
+                collapse: 0,
+                gap: 2.5,
+                panels: Vec::new(),
+            });
+            continue;
+        }
+        let Some(c) = cur.as_mut() else { continue };
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        let num = |v: &str| v.trim_end_matches(['%', 'p', 'x']).trim().parse::<f32>().ok();
+        match k {
+            "basis" => c.basis = num(v).unwrap_or(c.basis),
+            "min" => c.min = num(v).unwrap_or(c.min),
+            "max" => c.max = num(v).unwrap_or(c.max),
+            "grow" => c.grow = num(v).unwrap_or(c.grow),
+            "collapse" => c.collapse = num(v).unwrap_or(0.0) as u32,
+            "gap" => c.gap = num(v).unwrap_or(c.gap),
+            "panel" => {
+                let mut it = v.split_whitespace();
+                let name = it.next().unwrap_or("");
+                let weight = it.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(50.0);
+                match Panel::from_name(name) {
+                    Some(p) => c.panels.push((p, weight.max(1.0))),
+                    None => eprintln!("ng-term: unknown panel in .layaut: {name}"),
+                }
+            }
+            other => eprintln!("ng-term: unknown option in .layaut: {other}"),
+        }
+    }
+    if let Some(c) = cur.take() {
+        columns.push(c);
+    }
+    columns.retain(|c| !c.panels.is_empty());
+    if columns.is_empty() {
+        None
+    } else {
+        Some(FlexLayaut { columns })
+    }
 }
 
 /// The complete default theme: the default style plus the built-in

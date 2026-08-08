@@ -131,6 +131,8 @@ impl Filesystem {
 
     pub fn draw(&mut self, ctx: &mut Ctx, r: Rect) {
         self.hits.clear();
+        // Text scales with the panel width (container-query style).
+        ctx.panel_scale = ctx.panel_font_scale(&r);
         let base = ctx.theme.base;
         let title_px = ctx.font_px(1.02);
         // Path trimmed from the left so it fits in the narrow panel.
@@ -244,6 +246,7 @@ impl Filesystem {
 
             self.hits.push((trect, i));
         }
+        ctx.panel_scale = 1.0;
     }
 }
 

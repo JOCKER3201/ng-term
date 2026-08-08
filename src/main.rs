@@ -523,6 +523,7 @@ fn main() {
                             mouse,
                             term_font_scale: font_scale,
                             ui_font_scale,
+                            panel_scale: 1.0,
                         };
 
                         let booting = widgets::boot::draw(&mut ctx);
@@ -532,11 +533,11 @@ fn main() {
                             // the telemetry column under the control panel.
                             let portrait = h > w;
                             if portrait {
-                                widgets::left::draw_top(&mut ctx, layout.left_col, &snap);
+                                widgets::telemetry::draw_top(&mut ctx, layout.left_col, &snap);
                             } else {
-                                widgets::left::draw(&mut ctx, layout.left_col, &snap);
+                                widgets::telemetry::draw(&mut ctx, layout.left_col, &snap);
                             }
-                            widgets::right::draw(&mut ctx, layout.right_col, &snap);
+                            widgets::network::draw(&mut ctx, layout.right_col, &snap);
 
                             let occupied: [bool; TAB_COUNT] =
                                 std::array::from_fn(|i| sessions[i].is_some());
@@ -567,7 +568,7 @@ fn main() {
                                         layout.control.w,
                                         free,
                                     );
-                                    widgets::left::draw_mem_procs(&mut ctx, r, &snap);
+                                    widgets::telemetry::draw_mem_procs(&mut ctx, r, &snap);
                                 }
                             }
                             // Settings window drawn on top.
@@ -681,6 +682,7 @@ fn run_resolution_dialog(
                             mouse,
                             term_font_scale: 1.0,
                             ui_font_scale: 1.0,
+                            panel_scale: 1.0,
                         };
                         widgets::popup::draw_resolution_dialog(&mut ctx, mw, mh);
                         let atlas = if fonts.atlas_dirty {
