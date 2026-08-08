@@ -688,7 +688,7 @@ dependencies = [
 [[package]]
 name = "lib-ng-base"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-base#6a190b2dbc44ff3d1134cac0d2a0cc84f23872ae"
+source = "git+https://github.com/JOCKER3201/lib-ng-base#e521a56b06759544881c5b8879da7bb020b652fd"
 dependencies = [
  "fontdue",
  "serde_json",
@@ -708,7 +708,7 @@ dependencies = [
 [[package]]
 name = "lib-ng-widgets"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-widgets#fcd42adb4b69dcc8001bd09c8793ad35f4acebc4"
+source = "git+https://github.com/JOCKER3201/lib-ng-widgets#64ed730756d3412ba80b2403e5ca78f89d8414c1"
 dependencies = [
  "lib-ng-base",
  "lib-ng-object",

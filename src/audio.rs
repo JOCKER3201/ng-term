@@ -67,15 +67,19 @@ struct Alsa {
 unsafe impl Send for Alsa {}
 unsafe impl Sync for Alsa {}
 
+/// Resolves one entry point. The target type is named at the call site
+/// by the struct field it initialises; transmuting a dlsym pointer is
+/// how a C function is reached, and the signatures above are the
+/// contract with libasound.
 macro_rules! sym {
-    ($lib:expr, $name:literal) => {{
+    ($lib:expr, $name:literal, $ty:ty) => {{
         let cname = CString::new($name).ok()?;
         let p = libc::dlsym($lib, cname.as_ptr());
         if p.is_null() {
             libc::dlclose($lib);
             return None;
         }
-        std::mem::transmute(p)
+        std::mem::transmute::<*mut c_void, $ty>(p)
     }};
 }
 
@@ -89,22 +93,22 @@ impl Alsa {
             return None;
         }
         Some(Alsa {
-            open: sym!(lib, "snd_pcm_open"),
-            close: sym!(lib, "snd_pcm_close"),
-            prepare: sym!(lib, "snd_pcm_prepare"),
-            drain: sym!(lib, "snd_pcm_drain"),
-            writei: sym!(lib, "snd_pcm_writei"),
-            recover: sym!(lib, "snd_pcm_recover"),
-            hw_malloc: sym!(lib, "snd_pcm_hw_params_malloc"),
-            hw_free: sym!(lib, "snd_pcm_hw_params_free"),
-            hw_any: sym!(lib, "snd_pcm_hw_params_any"),
-            hw_set_access: sym!(lib, "snd_pcm_hw_params_set_access"),
-            hw_set_format: sym!(lib, "snd_pcm_hw_params_set_format"),
-            hw_set_channels: sym!(lib, "snd_pcm_hw_params_set_channels"),
-            hw_set_rate_near: sym!(lib, "snd_pcm_hw_params_set_rate_near"),
-            hw_set_period_near: sym!(lib, "snd_pcm_hw_params_set_period_size_near"),
-            hw_set_buffer_near: sym!(lib, "snd_pcm_hw_params_set_buffer_size_near"),
-            hw_apply: sym!(lib, "snd_pcm_hw_params"),
+            open: sym!(lib, "snd_pcm_open", unsafe extern "C" fn(*mut *mut c_void, *const c_char, c_int, c_int) -> c_int),
+            close: sym!(lib, "snd_pcm_close", unsafe extern "C" fn(*mut c_void) -> c_int),
+            prepare: sym!(lib, "snd_pcm_prepare", unsafe extern "C" fn(*mut c_void) -> c_int),
+            drain: sym!(lib, "snd_pcm_drain", unsafe extern "C" fn(*mut c_void) -> c_int),
+            writei: sym!(lib, "snd_pcm_writei", unsafe extern "C" fn(*mut c_void, *const c_void, Ulong) -> Slong),
+            recover: sym!(lib, "snd_pcm_recover", unsafe extern "C" fn(*mut c_void, c_int, c_int) -> c_int),
+            hw_malloc: sym!(lib, "snd_pcm_hw_params_malloc", unsafe extern "C" fn(*mut *mut c_void) -> c_int),
+            hw_free: sym!(lib, "snd_pcm_hw_params_free", unsafe extern "C" fn(*mut c_void)),
+            hw_any: sym!(lib, "snd_pcm_hw_params_any", unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int),
+            hw_set_access: sym!(lib, "snd_pcm_hw_params_set_access", unsafe extern "C" fn(*mut c_void, *mut c_void, c_int) -> c_int),
+            hw_set_format: sym!(lib, "snd_pcm_hw_params_set_format", unsafe extern "C" fn(*mut c_void, *mut c_void, c_int) -> c_int),
+            hw_set_channels: sym!(lib, "snd_pcm_hw_params_set_channels", unsafe extern "C" fn(*mut c_void, *mut c_void, c_uint) -> c_int),
+            hw_set_rate_near: sym!(lib, "snd_pcm_hw_params_set_rate_near", unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_uint, *mut c_int) -> c_int),
+            hw_set_period_near: sym!(lib, "snd_pcm_hw_params_set_period_size_near", unsafe extern "C" fn(*mut c_void, *mut c_void, *mut Ulong, *mut c_int) -> c_int),
+            hw_set_buffer_near: sym!(lib, "snd_pcm_hw_params_set_buffer_size_near", unsafe extern "C" fn(*mut c_void, *mut c_void, *mut Ulong) -> c_int),
+            hw_apply: sym!(lib, "snd_pcm_hw_params", unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int),
             handle: lib,
         })
     }

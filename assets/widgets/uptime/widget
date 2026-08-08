@@ -1,0 +1,23 @@
+# ng-term widget.
+#
+# This one has no code behind it at all: everything below the metadata
+# is its description, and the program draws it by reading this file.
+#
+# Text may carry {name} placeholders, optionally passed through a
+# formatter with "|": {host.uptime|uptime}, {mem.used|bytes},
+# {host.model|upper}, {cpu.load1|.2}. A name nothing answers to renders
+# as "--", so a typo costs one value rather than the whole widget.
+
+Label=UPTIME
+Description=How long the machine has been up, and who is on it.
+RefHeight=8.0
+MinHeight=6.0
+
+[title]
+text = UPTIME
+
+[rows]
+row = UP {host.uptime|uptime}
+row = HOST {host.name|upper}
+row = USER {host.user|upper}
+row = KERNEL {host.kernel}

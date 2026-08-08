@@ -207,10 +207,19 @@ fn main() {
     // One instance per registered widget, built by name from the set the
     // widgets crate provides. A described widget the set has no renderer
     // for stays None: it takes part in the layout and draws nothing.
+    // A description with blocks wins over the compiled renderer, so any
+    // built-in can be replaced by editing its file, and a widget can
+    // exist with no code behind it at all.
     let widget_set = ng_builtins::default_set();
     let mut widget_inst: Vec<Option<Box<dyn widgets::Widget>>> = widgets::Panel::all()
         .into_iter()
-        .map(|p| widget_set.make(p.name()))
+        .map(|p| {
+            match config::widget_desc(p.name()) {
+                Some(d) => Some(Box::new(ng_widgets::desc::DescWidget::new(d))
+                    as Box<dyn widgets::Widget>),
+                None => widget_set.make(p.name()),
+            }
+        })
         .collect();
 
     let mut settings = widgets::settings::Settings::new();

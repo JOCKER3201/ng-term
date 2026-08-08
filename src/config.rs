@@ -605,6 +605,16 @@ pub fn load_widget_registry() -> Vec<WidgetDef> {
     out
 }
 
+/// The block description of a widget, if its file carries one. A file
+/// with blocks describes how the widget draws; one without leaves that
+/// to the compiled renderer registered under the same name.
+pub fn widget_desc(name: &str) -> Option<ng_widgets::desc::Desc> {
+    let name = safe_component(name)?;
+    let text = std::fs::read_to_string(widgets_dir().join(name).join("widget")).ok()?;
+    let desc = ng_widgets::desc::Desc::parse(&text);
+    (!desc.is_empty()).then_some(desc)
+}
+
 /// The scan itself, over an explicit directory.
 fn scan_widget_dir(dir: &Path) -> Vec<WidgetDef> {
     let mut out: Vec<WidgetDef> = Vec::new();
@@ -1917,7 +1927,13 @@ mod tests {
         let files = scan_widget_dir(dir);
         assert!(!files.is_empty(), "assets/widgets must ship descriptions");
         let code = ng_base::base::builtin_widgets();
-        assert_eq!(code.len(), files.len(), "widget counts differ");
+        // Code must not claim a widget the files do not describe; the
+        // reverse is fine and is the point of the feature — a widget can
+        // ship as a description with no compiled renderer behind it.
+        assert!(
+            files.len() >= code.len(),
+            "every built-in needs a description file"
+        );
         for c in &code {
             let f = files
                 .iter()
