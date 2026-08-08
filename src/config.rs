@@ -605,6 +605,17 @@ pub fn load_widget_registry() -> Vec<WidgetDef> {
     out
 }
 
+/// The script of a widget, if its directory holds one. A widget is a
+/// directory with `<name>.rhai` in it, alongside whatever assets the
+/// widget needs — that file IS the widget.
+pub fn widget_script(name: &str) -> Option<ng_widgets::script::Script> {
+    let name = safe_component(name)?;
+    let path = widgets_dir().join(&name).join(format!("{name}.rhai"));
+    path.is_file()
+        .then(|| ng_widgets::script::Script::load(&path))
+        .flatten()
+}
+
 /// The block description of a widget, if its file carries one. A file
 /// with blocks describes how the widget draws; one without leaves that
 /// to the compiled renderer registered under the same name.
@@ -629,7 +640,16 @@ fn scan_widget_dir(dir: &Path) -> Vec<WidgetDef> {
         for dir in dirs {
             let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
             let Some(name) = safe_component(name) else { continue };
-            let Ok(text) = std::fs::read_to_string(dir.join("widget")) else { continue };
+            // A directory is a widget when it holds its script, or the
+            // metadata file the compiled widgets still use. The script
+            // is the widget; the metadata file only carries what the
+            // layout engine needs about widgets that have no script.
+            let script = dir.join(format!("{name}.rhai"));
+            let meta = dir.join("widget");
+            if !script.is_file() && !meta.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&meta).unwrap_or_default();
             let kv = parse_kv(&text);
             let num = |key: &str, def: f32| {
                 kv.get(key)

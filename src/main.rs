@@ -214,6 +214,13 @@ fn main() {
     let mut widget_inst: Vec<Option<Box<dyn widgets::Widget>>> = widgets::Panel::all()
         .into_iter()
         .map(|p| {
+            // A script is the widget. Failing that, a block description;
+            // failing that, the compiled renderer registered under the
+            // same name — which is all the interactive widgets have.
+            if let Some(script) = config::widget_script(p.name()) {
+                return Some(Box::new(ng_widgets::script::ScriptWidget::new(script))
+                    as Box<dyn widgets::Widget>);
+            }
             match config::widget_desc(p.name()) {
                 Some(d) => Some(Box::new(ng_widgets::desc::DescWidget::new(d))
                     as Box<dyn widgets::Widget>),
