@@ -1,7 +1,8 @@
 //! Modal settings window (centered). Main view: CLOSE + THEMES. The THEMES
-//! view is a submenu with LOOK (complete themes), STYLES (color styles from
-//! themes/style) and LAYAUTS (layouts from themes/layauts). Selections are
-//! written to ng-term.conf (Look= / Style= / Layaut=) and applied live.
+//! view is a submenu with LOOK (complete themes), STYLES (color styles),
+//! LAYAUTS (layouts) and SOUNDS (sound themes) — all read from the data
+//! directory ~/.local/share/ng-term. Selections are written to ng-term.conf
+//! (Look= / Style= / Layaut= / Sounds=) and applied live.
 
 use super::{Ctx, Rect};
 use crate::config::{self, ThemeInfo};
@@ -15,8 +16,10 @@ enum View {
     Look,
     Styles,
     Layauts,
+    Sounds,
     Font,
     Grid,
+    Sound,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -27,11 +30,17 @@ enum Act {
     OpenLook,
     OpenStyles,
     OpenLayauts,
+    OpenSounds,
     Look(usize),
     Style(usize),
     Layaut(usize),
+    Sounds(usize),
     OpenFont,
     OpenGrid,
+    OpenSound,
+    VolumeTrack,
+    ToggleTyping,
+    ToggleAmbient,
     ToggleSnap,
     GridCols(i32),
     GridRows(i32),
@@ -66,10 +75,12 @@ pub struct Settings {
     looks: Vec<ThemeInfo>,
     styles: Vec<String>,
     layauts: Vec<String>,
+    sounds: Vec<String>,
     /// Current selections from ng-term.conf (highlighted in the lists).
     current_look: Option<String>,
     current_style: Option<String>,
     current_layaut: Option<String>,
+    current_sounds: Option<String>,
     /// Font view state, indexed by section (0 = Term, 1 = Ui).
     families: [Vec<String>; 2],
     cur_family: [Option<String>; 2],
@@ -89,6 +100,15 @@ pub struct Settings {
     grid_pad: u32,
     dragging_pad: bool,
     pad_rect: Rect,
+    /// SOUND view: master volume 0-100 and the two mute switches.
+    sound_volume: u32,
+    sound_typing: bool,
+    sound_ambient: bool,
+    dragging_volume: bool,
+    volume_rect: Rect,
+    /// Set to true whenever a sound preference changed, so main can
+    /// push it straight to the audio output.
+    pub sound_dirty: bool,
     /// Set by EDIT GRID — main enters the layout editor and clears it.
     pub edit_requested: bool,
     hits: Vec<(Rect, Act)>,
@@ -110,9 +130,11 @@ impl Settings {
             looks: Vec::new(),
             styles: Vec::new(),
             layauts: Vec::new(),
+            sounds: Vec::new(),
             current_look: None,
             current_style: None,
             current_layaut: None,
+            current_sounds: None,
             families: [Vec::new(), Vec::new()],
             cur_family: [None, None],
             cur_weight: [None, None],
@@ -127,6 +149,12 @@ impl Settings {
             grid_pad: 8,
             dragging_pad: false,
             pad_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            sound_volume: 100,
+            sound_typing: true,
+            sound_ambient: true,
+            dragging_volume: false,
+            volume_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            sound_dirty: false,
             edit_requested: false,
             hits: Vec::new(),
             flash: None,
@@ -156,6 +184,12 @@ impl Settings {
         self.cur_size[i] = (min + t * (max - min)).round() as u32;
     }
 
+    fn set_volume_from_x(&mut self, x: f32) {
+        let track = self.volume_rect;
+        let t = ((x - track.x) / track.w.max(1.0)).clamp(0.0, 1.0);
+        self.sound_volume = (t * 100.0).round() as u32;
+    }
+
     fn set_pad_from_x(&mut self, x: f32) {
         let track = self.pad_rect;
         let t = ((x - track.x) / track.w.max(1.0)).clamp(0.0, 1.0);
@@ -170,6 +204,10 @@ impl Settings {
         if self.dragging_pad {
             self.set_pad_from_x(x);
         }
+        if self.dragging_volume {
+            self.set_volume_from_x(x);
+            self.sound_dirty = true;
+        }
     }
 
     /// Live widget padding while the GRID view is open — applied every
@@ -180,6 +218,15 @@ impl Settings {
         } else {
             None
         }
+    }
+
+    /// Current sound preferences, for main to hand to the audio output.
+    pub fn sound_settings(&self) -> (f32, bool, bool) {
+        (
+            self.sound_volume as f32 / 100.0,
+            self.sound_typing,
+            self.sound_ambient,
+        )
     }
 
     /// Live font scales for the sliders in the FONT view — applied every
@@ -197,6 +244,10 @@ impl Settings {
 
     /// Mouse button released; returns true when the configuration changed.
     pub fn release(&mut self) -> bool {
+        if self.dragging_volume {
+            self.dragging_volume = false;
+            config::set_sound_volume(self.sound_volume);
+        }
         if self.dragging_pad {
             self.dragging_pad = false;
             config::set_grid_padding(self.grid_pad);
@@ -215,6 +266,7 @@ impl Settings {
     pub fn show(&mut self) {
         self.open = true;
         self.view = View::Menu;
+        ng_base::sound::emit(ng_base::sound::Event::PanelOpen);
     }
 
     /// Opens the settings window straight at the GRID view — used by the
@@ -227,10 +279,12 @@ impl Settings {
         self.grid_rows = rows;
         self.grid_pad = pad;
         self.view = View::Grid;
+        ng_base::sound::emit(ng_base::sound::Event::PanelOpen);
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        ng_base::sound::emit(ng_base::sound::Event::PanelClose);
     }
 
     /// Whether the cursor is over an interactive element of the window.
@@ -262,12 +316,28 @@ impl Settings {
             return false;
         };
         self.flash = Some((act, Instant::now()));
+        // Every button clicks; the actions below that mean more than a
+        // plain press replace it with their own sound.
+        use ng_base::sound::{emit, Event as Sfx};
         match act {
-            Act::Close => self.open = false,
+            Act::Close | Act::Back => {}
+            Act::ToggleSnap | Act::ToggleTyping | Act::ToggleAmbient => {}
+            Act::VolumeTrack => {}
+            Act::Look(_) | Act::Style(_) | Act::Layaut(_) | Act::Sounds(_) => {}
+            _ => emit(Sfx::Click),
+        }
+        match act {
+            Act::Close => {
+                self.open = false;
+                emit(Sfx::PanelClose);
+            }
             Act::Back => {
+                emit(Sfx::Click);
                 self.dropdown = None;
                 self.view = match self.view {
-                    View::Look | View::Styles | View::Layauts => View::Themes,
+                    View::Look | View::Styles | View::Layauts | View::Sounds => {
+                        View::Themes
+                    }
                     _ => View::Menu,
                 }
             }
@@ -288,12 +358,18 @@ impl Settings {
                 self.refresh_current();
                 self.view = View::Layauts;
             }
+            Act::OpenSounds => {
+                self.sounds = config::list_sound_themes();
+                self.refresh_current();
+                self.view = View::Sounds;
+            }
             Act::Look(i) => {
                 // A look replaces everything: Style= and Layaut= are cleared.
                 if let Some(info) = self.looks.get(i) {
                     config::set_theme_option(&info.name);
                     config::clear_component_options();
                     self.refresh_current();
+                    emit(Sfx::Theme);
                     return true;
                 }
             }
@@ -308,6 +384,7 @@ impl Settings {
                     config::clear_look_option();
                     config::canonicalize_components();
                     self.refresh_current();
+                    emit(Sfx::Theme);
                     return true;
                 }
             }
@@ -320,8 +397,46 @@ impl Settings {
                     config::clear_look_option();
                     config::canonicalize_components();
                     self.refresh_current();
+                    emit(Sfx::Theme);
                     return true;
                 }
+            }
+            Act::Sounds(i) => {
+                if let Some(name) = self.sounds.get(i).cloned() {
+                    config::set_sounds_option(&name);
+                    if config::current_style_name().is_none() {
+                        config::set_style_option("default");
+                    }
+                    config::clear_look_option();
+                    config::canonicalize_components();
+                    self.refresh_current();
+                    emit(Sfx::Theme);
+                    return true;
+                }
+            }
+            Act::OpenSound => {
+                let (vol, typing, ambient) = config::sound_prefs();
+                self.sound_volume = vol;
+                self.sound_typing = typing;
+                self.sound_ambient = ambient;
+                self.view = View::Sound;
+            }
+            Act::VolumeTrack => {
+                self.dragging_volume = true;
+                self.set_volume_from_x(x);
+                self.sound_dirty = true;
+            }
+            Act::ToggleTyping => {
+                self.sound_typing = !self.sound_typing;
+                config::set_sound_typing(self.sound_typing);
+                self.sound_dirty = true;
+                emit(if self.sound_typing { Sfx::ToggleOn } else { Sfx::ToggleOff });
+            }
+            Act::ToggleAmbient => {
+                self.sound_ambient = !self.sound_ambient;
+                config::set_sound_ambient(self.sound_ambient);
+                self.sound_dirty = true;
+                emit(if self.sound_ambient { Sfx::ToggleOn } else { Sfx::ToggleOff });
             }
             Act::OpenGrid => {
                 let (snap, cols, rows, pad) = config::grid_prefs();
@@ -334,6 +449,7 @@ impl Settings {
             Act::ToggleSnap => {
                 self.grid_snap = !self.grid_snap;
                 config::set_grid_snap(self.grid_snap);
+                emit(if self.grid_snap { Sfx::ToggleOn } else { Sfx::ToggleOff });
             }
             Act::GridCols(d) => {
                 self.grid_cols = (self.grid_cols as i32 + d).clamp(2, 32) as u32;
@@ -426,9 +542,10 @@ impl Settings {
     /// components it is composed of).
     fn refresh_current(&mut self) {
         self.current_look = config::current_theme_name();
-        let (style, layaut) = config::effective_components();
+        let (style, layaut, sounds) = config::effective_components();
         self.current_style = style;
         self.current_layaut = layaut;
+        self.current_sounds = sounds;
     }
 
     pub fn draw(&mut self, ctx: &mut Ctx) {
@@ -451,8 +568,10 @@ impl Settings {
             View::Look => "SETTINGS \u{2014} LOOK",
             View::Styles => "SETTINGS \u{2014} STYLES",
             View::Layauts => "SETTINGS \u{2014} LAYAUTS",
+            View::Sounds => "SETTINGS \u{2014} SOUNDS",
             View::Font => "SETTINGS \u{2014} FONT",
             View::Grid => "SETTINGS \u{2014} GRID",
+            View::Sound => "SETTINGS \u{2014} SOUND",
         };
         ctx.dl.module_title(
             ctx.fonts,
@@ -490,6 +609,7 @@ impl Settings {
                 let entries = [
                     ("THEMES", Act::OpenThemes),
                     ("FONT", Act::OpenFont),
+                    ("SOUND", Act::OpenSound),
                     ("GRID", Act::OpenGrid),
                 ];
                 for (i, (label, act)) in entries.into_iter().enumerate() {
@@ -511,6 +631,7 @@ impl Settings {
                     ("LOOK", Act::OpenLook),
                     ("STYLES", Act::OpenStyles),
                     ("LAYAUTS", Act::OpenLayauts),
+                    ("SOUNDS", Act::OpenSounds),
                 ];
                 for (i, (label, act)) in entries.into_iter().enumerate() {
                     let y = content.y + (btn_h + gap) * (i as f32 + 1.0);
@@ -533,8 +654,14 @@ impl Settings {
                 self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Layaut);
                 self.empty_note(ctx, content, btn_h, gap, &names, "NO LAYAUTS FOUND");
             }
+            View::Sounds => {
+                let names = self.sounds.clone();
+                self.item_grid(ctx, content, btn_h, gap, corner_w, &names, Act::Sounds);
+                self.empty_note(ctx, content, btn_h, gap, &names, "NO SOUND THEMES FOUND");
+            }
             View::Font => self.draw_font_view(ctx, content, btn_h, gap, corner_w),
             View::Grid => self.draw_grid_view(ctx, content, btn_h, gap, corner_w),
+            View::Sound => self.draw_sound_view(ctx, content, btn_h, gap, corner_w),
         }
     }
 
@@ -638,6 +765,91 @@ impl Settings {
             Rect::new(bx, y + gap, bw, btn_h),
             "EDIT GRID",
             Act::EditGrid,
+        );
+    }
+
+    /// SOUND view: master volume plus the two switches that matter in
+    /// daily use — typing, which fires constantly, and the ambient bed.
+    fn draw_sound_view(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        btn_h: f32,
+        gap: f32,
+        corner_w: f32,
+    ) {
+        let base = ctx.theme.base;
+        self.button(
+            ctx,
+            Rect::new(content.x, content.y, corner_w, btn_h),
+            "BACK",
+            Act::Back,
+        );
+
+        let px = ctx.font_px(1.0);
+        let mut y = content.y + btn_h + gap * 2.0;
+
+        // VOLUME slider — same form as the font SIZE sliders.
+        ctx.dl.text(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.x,
+            y + (btn_h - px * 1.3) / 2.0,
+            "VOLUME",
+            base.alpha(0.75),
+            px * 0.1,
+        );
+        let label_w = ctx.fonts.measure(FONT_UI, px, "VOLUME", px * 0.1) + px * 2.0;
+        let value_w = ctx.fonts.measure(FONT_UI, px, "100 %", px * 0.05) + px;
+        let track = Rect::new(content.x + label_w, y, content.w - label_w - value_w, btn_h);
+        self.volume_rect = track;
+        ng_object::slider::track(ctx, track, (self.sound_volume as f32 / 100.0).clamp(0.0, 1.0));
+        ctx.dl.text_right(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.right(),
+            y + (btn_h - px * 1.3) / 2.0,
+            &format!("{} %", self.sound_volume),
+            base,
+            px * 0.05,
+        );
+        self.hits.push((track, Act::VolumeTrack));
+        y += btn_h + gap;
+
+        for (label, on, act) in [
+            ("TYPING SOUNDS", self.sound_typing, Act::ToggleTyping),
+            ("AMBIENT", self.sound_ambient, Act::ToggleAmbient),
+        ] {
+            let row = Rect::new(content.x, y, content.w, btn_h);
+            let hover = row.contains(ctx.mouse.0, ctx.mouse.1);
+            ng_object::checkbox::draw(ctx, row, label, on, hover);
+            self.hits.push((row, act));
+            y += btn_h + gap;
+        }
+
+        // Which set is in use, and whether it was found at all: silence
+        // with no explanation is the one thing worth spelling out here.
+        let note = match config::active_sounds_dir() {
+            Some(dir) => format!(
+                "SET: {}",
+                dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_uppercase()
+            ),
+            None => "NO SOUND SET SELECTED".to_string(),
+        };
+        ctx.dl.text(
+            ctx.fonts,
+            FONT_UI,
+            px * 0.9,
+            content.x,
+            y + gap,
+            &note,
+            base.alpha(0.5),
+            px * 0.09,
         );
     }
 
@@ -881,6 +1093,10 @@ impl Settings {
             }
             Act::Layaut(i) => {
                 self.layauts.get(i).map(|s| Some(s) == self.current_layaut.as_ref())
+                    == Some(true)
+            }
+            Act::Sounds(i) => {
+                self.sounds.get(i).map(|s| Some(s) == self.current_sounds.as_ref())
                     == Some(true)
             }
             _ => false,

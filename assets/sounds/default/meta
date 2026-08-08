@@ -1,0 +1,44 @@
+# ng-term sound theme.
+#
+# The theme's NAME is the name of the directory holding this file, so
+# copying the directory under a new name is all it takes to fork a theme.
+#
+# Every other line maps an interface EVENT to the sound file that plays
+# for it. Paths are relative to this directory. An event may list several
+# files separated by spaces — ng-term cycles through them, so a repeated
+# action (typing, above all) never sounds mechanical.
+#
+# An event with no entry here, or one pointing at a missing file, is
+# simply silent; a theme does not have to define all of them.
+
+Description=Procedurally synthesised sci-fi set — the ng-term signature theme
+
+# --- session -------------------------------------------------------------
+Boot=boot.wav
+Shutdown=shutdown.wav
+
+# --- terminal input ------------------------------------------------------
+Key=key1.wav key2.wav key3.wav key4.wav
+KeyReturn=key-return.wav
+KeyErase=key-erase.wav
+
+# --- interface -----------------------------------------------------------
+Hover=hover.wav
+Click=click.wav
+ToggleOn=toggle-on.wav
+ToggleOff=toggle-off.wav
+PanelOpen=panel-open.wav
+PanelClose=panel-close.wav
+Alert=alert.wav
+Error=error.wav
+Theme=theme.wav
+
+# --- layout editor -------------------------------------------------------
+Grab=grab.wav
+Drop=drop.wav
+Snap=snap.wav
+Save=save.wav
+
+# --- background ----------------------------------------------------------
+# Looped continuously while the program runs; leave empty for silence.
+Ambient=ambient.wav

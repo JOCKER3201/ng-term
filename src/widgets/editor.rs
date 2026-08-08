@@ -405,6 +405,7 @@ impl Editor {
             if Self::x_rect(&r).contains(x, y) {
                 self.rects[i] = OFF_SPEC;
                 self.drag = None;
+                ng_base::sound::emit(ng_base::sound::Event::Drop);
                 return EditorHit::Handled;
             }
             if l || rr || t || b {
@@ -412,6 +413,7 @@ impl Editor {
             } else {
                 self.drag = Some((i, Mode::Move { dx: x - r.x, dy: y - r.y }));
             }
+            ng_base::sound::emit(ng_base::sound::Event::Grab);
         }
         EditorHit::Handled
     }
@@ -500,6 +502,15 @@ impl Editor {
     }
 
     pub fn mouse_up(&mut self) {
+        if self.drag.is_some() {
+            // Snapping makes the release land on the grid, so it gets
+            // the sharper confirmation of the two.
+            ng_base::sound::emit(if self.snap {
+                ng_base::sound::Event::Snap
+            } else {
+                ng_base::sound::Event::Drop
+            });
+        }
         self.drag = None;
         self.adding = None;
         // Releasing mid-animation finishes the growth instantly.

@@ -1,13 +1,26 @@
-//! User configuration: ~/.config/ng-term
+//! User configuration and theme data.
 //!
-//! Structure:
+//! Configuration (XDG_CONFIG_HOME):
 //!   ~/.config/ng-term/ng-term.conf        — main configuration (Key=Value)
-//!   ~/.config/ng-term/themes/style/       — shared style files (*.css)
-//!   ~/.config/ng-term/themes/layauts/     — custom layout files (*.layaut)
-//!   ~/.config/ng-term/themes/look/<theme>/ — complete themes:
+//!   ~/.config/ng-term/shellrc             — generated bash startup file
+//!
+//! Everything a theme is made of is DATA, not configuration, so it lives
+//! under XDG_DATA_HOME:
+//!   ~/.local/share/ng-term/style/         — shared style files (*.css)
+//!   ~/.local/share/ng-term/layauts/       — custom layout files (*.layaut)
+//!   ~/.local/share/ng-term/sounds/<set>/  — sound themes, one directory
+//!       each; the DIRECTORY NAME is the theme name. Inside, a "meta"
+//!       file maps every interface event to the sound file that plays
+//!       for it, next to the audio files themselves.
+//!   ~/.local/share/ng-term/look/<theme>/  — complete themes:
 //!       meta        — metafile with a Name= field (name used in ng-term.conf)
-//!       *.css       — symlink into themes/style/
+//!       *.css       — symlink into ../../style/
 //!       *.layaut    — optional; without it the adaptive default is used
+//!       *.sounds    — optional directory symlink into ../../sounds/;
+//!                     without it the "default" set is used
+//!
+//! Configurations written before this split keep a themes/ directory in
+//! the config directory; it is moved into the data directory on startup.
 //!
 //! EVERY layout is computed from the ACTUAL window size every frame (see
 //! src/flex.rs), so resizing or moving the window reflows the interface
@@ -32,9 +45,10 @@
 //! landscape, a vertical restack on portrait).
 //!
 //! In ng-term.conf the Look=<name> option picks a complete theme by the
-//! metafile's Name= field. The Style= and Layaut= options name files from
-//! themes/style and themes/layauts (without extensions). Empty values or
-//! missing options = defaults built into the code.
+//! metafile's Name= field. The Style=, Layaut= and Sounds= options name
+//! components: files from style/ and layauts/ (without extensions) and a
+//! directory from sounds/. Empty values or missing options = defaults
+//! built into the code.
 
 use crate::theme::{Color, Theme};
 use crate::widgets::{FlexColumn, FlexLayaut, LayoutMode, LayoutSpec, Panel, PanelSpec};
@@ -79,7 +93,7 @@ pub struct Config {
     pub layout: LayoutDef,
 }
 
-/// Theme found in ~/.config/ng-term/themes (name from the metafile).
+/// Theme found in the data directory (name from the metafile).
 #[derive(Clone)]
 pub struct ThemeInfo {
     pub name: String,
@@ -103,12 +117,12 @@ const BUILTIN_THEMES: [(&str, u8, u8, u8, &str, &str, &str, &str, &str); 10] = [
 ];
 
 
-/// Directory with complete themes: ~/.config/ng-term/themes/look
+/// Directory with complete themes: ~/.local/share/ng-term/look
 fn look_dir() -> PathBuf {
-    config_dir().join("themes").join("look")
+    data_dir().join("look")
 }
 
-/// Scans the themes/look directory; returns entries with a valid metafile (Name=).
+/// Scans the look/ directory; returns entries with a valid metafile (Name=).
 pub fn list_themes() -> Vec<ThemeInfo> {
     let dir = look_dir();
     let mut out = Vec::new();
@@ -136,7 +150,7 @@ pub fn load() -> (Config, Option<String>) {
     resolve()
 }
 
-/// Layout by name: a custom file from themes/layauts — flexbox format
+/// Layout by name: a custom file from layauts/ — flexbox format
 /// ([column] sections) or the legacy fixed format — or, for "default"
 /// (when no such file exists), the built-in flexbox layout (src/flex.rs).
 fn layaut_by_name(name: &str) -> Option<LayoutDef> {
@@ -392,16 +406,19 @@ pub fn resolve() -> (Config, Option<String>) {
     (default_theme_config(), warning)
 }
 
-/// Clears the Style= and Layaut= options (a complete look was selected).
+/// Clears the component options (a complete look was selected).
 pub fn clear_component_options() {
     set_conf_kv("Style", "");
     set_conf_kv("Layaut", "");
+    set_conf_kv("Sounds", "");
 }
 
-/// Style/layaut component names a look is composed of (from its symlinks).
-fn look_components(dir: &Path) -> (Option<String>, Option<String>) {
+/// The component names a look is composed of, read from its symlinks:
+/// (style, layaut, sounds).
+fn look_components(dir: &Path) -> (Option<String>, Option<String>, Option<String>) {
     let mut style = None;
     let mut layaut = None;
+    let mut sounds = None;
     if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.flatten() {
             let p = entry.path();
@@ -418,62 +435,81 @@ fn look_components(dir: &Path) -> (Option<String>, Option<String>) {
             match ext.as_deref() {
                 Some("css") => style = stem,
                 Some("layaut") => layaut = stem,
+                // The sounds component is a whole directory, so the
+                // symlink target's final component is the theme name.
+                Some("sounds") => sounds = stem,
                 _ => {}
             }
         }
     }
-    // A look without a layout symlink uses the adaptive default.
-    (style, layaut.or_else(|| Some("default".to_string())))
+    // A look without a layout or sounds symlink uses the defaults.
+    (
+        style,
+        layaut.or_else(|| Some("default".to_string())),
+        sounds.or_else(|| Some("default".to_string())),
+    )
 }
 
-/// Finds a look whose components are exactly (style, layaut).
-fn find_matching_look(style: &str, layaut: &str) -> Option<String> {
+/// Finds a look whose components are exactly (style, layaut, sounds).
+fn find_matching_look(style: &str, layaut: &str, sounds: &str) -> Option<String> {
     for info in list_themes() {
-        let (s, l) = look_components(&info.dir);
-        if s.as_deref() == Some(style) && l.as_deref() == Some(layaut) {
+        let (s, l, snd) = look_components(&info.dir);
+        if s.as_deref() == Some(style)
+            && l.as_deref() == Some(layaut)
+            && snd.as_deref() == Some(sounds)
+        {
             return Some(info.name);
         }
     }
     None
 }
 
-/// Effective component names (style, layaut) implied by the current
-/// configuration — for a selected look these are its symlink targets,
-/// in component mode the Style=/Layaut= values (missing one falls back
-/// to "default"), and with nothing set the "default"/"default" pair.
-pub fn effective_components() -> (Option<String>, Option<String>) {
+/// Effective component names (style, layaut, sounds) implied by the
+/// current configuration — for a selected look these are its symlink
+/// targets, in component mode the Style=/Layaut=/Sounds= values (a
+/// missing one falls back to "default"), and with nothing set all three
+/// are "default".
+pub fn effective_components() -> (Option<String>, Option<String>, Option<String>) {
     if let Some(name) = current_theme_name() {
         if let Some(info) = list_themes().into_iter().find(|t| t.name == name) {
             return look_components(&info.dir);
         }
-        return (None, None);
+        return (None, None, None);
     }
     let s = current_style_name();
     let l = current_layaut_name();
-    if s.is_none() && l.is_none() {
-        return (Some("default".into()), Some("default".into()));
+    let snd = current_sounds_name();
+    if s.is_none() && l.is_none() && snd.is_none() {
+        return (
+            Some("default".into()),
+            Some("default".into()),
+            Some("default".into()),
+        );
     }
     (
         Some(s.unwrap_or_else(|| "default".into())),
         Some(l.unwrap_or_else(|| "default".into())),
+        Some(snd.unwrap_or_else(|| "default".into())),
     )
 }
 
-/// If the effective Style=/Layaut= pair (missing one falls back to
-/// "default") matches some look, rewrites ng-term.conf so that only
-/// Look= is set and returns the look name.
+/// If the effective Style=/Layaut=/Sounds= triple (a missing one falls
+/// back to "default") matches some look, rewrites ng-term.conf so that
+/// only Look= is set and returns the look name.
 pub fn canonicalize_components() -> Option<String> {
     if current_theme_name().is_some() {
         return None;
     }
     let style_set = current_style_name();
     let layaut_set = current_layaut_name();
-    if style_set.is_none() && layaut_set.is_none() {
+    let sounds_set = current_sounds_name();
+    if style_set.is_none() && layaut_set.is_none() && sounds_set.is_none() {
         return None;
     }
     let s = style_set.unwrap_or_else(|| "default".into());
     let l = layaut_set.unwrap_or_else(|| "default".into());
-    let look = find_matching_look(&s, &l)?;
+    let snd = sounds_set.unwrap_or_else(|| "default".into());
+    let look = find_matching_look(&s, &l, &snd)?;
     set_theme_option(&look);
     clear_component_options();
     Some(look)
@@ -491,7 +527,7 @@ pub fn shellrc_path() -> PathBuf {
 
 /// Accepts a config value only if it is a single safe path component
 /// (no separators, not "..", not absolute) — so Look=/Style=/Layaut=
-/// values joined into themes/* paths cannot escape the config directory.
+/// values joined into data-directory paths cannot escape it.
 fn safe_component(name: &str) -> Option<String> {
     let n = name.trim();
     if n.is_empty() || n == "." || n == ".." {
@@ -524,14 +560,57 @@ fn conf_kv() -> HashMap<String, String> {
     parse_kv(&std::fs::read_to_string(config_dir().join("ng-term.conf")).unwrap_or_default())
 }
 
-/// Directory with shared styles: ~/.config/ng-term/themes/style
+/// Directory with shared styles: ~/.local/share/ng-term/style
 fn style_dir() -> PathBuf {
-    config_dir().join("themes").join("style")
+    data_dir().join("style")
 }
 
-/// Directory with custom layouts: ~/.config/ng-term/themes/layauts
+/// Directory with custom layouts: ~/.local/share/ng-term/layauts
 fn layauts_dir() -> PathBuf {
-    config_dir().join("themes").join("layauts")
+    data_dir().join("layauts")
+}
+
+/// Directory with sound themes: ~/.local/share/ng-term/sounds
+fn sounds_dir() -> PathBuf {
+    data_dir().join("sounds")
+}
+
+/// Sound theme names — the subdirectories of sounds/ that carry a
+/// metafile. Unlike looks, the DIRECTORY NAME is the theme name.
+pub fn list_sound_themes() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(sounds_dir()) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if !p.is_dir() || read_meta(&p).is_none() {
+                continue;
+            }
+            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Directory of the sound theme the current configuration selects —
+/// from Sounds=, or from the chosen look's *.sounds symlink. None when
+/// it names a set that is not installed.
+pub fn active_sounds_dir() -> Option<PathBuf> {
+    let (_, _, sounds) = effective_components();
+    let name = safe_component(&sounds?)?;
+    let dir = sounds_dir().join(name);
+    dir.is_dir().then_some(dir)
+}
+
+/// Current Sounds= value from ng-term.conf (if a safe, non-empty name).
+pub fn current_sounds_name() -> Option<String> {
+    conf_kv().get("Sounds").and_then(|s| safe_component(s))
+}
+
+pub fn set_sounds_option(name: &str) {
+    set_conf_kv("Sounds", name);
 }
 
 /// File stems (no extension) of files with the given extension in a directory.
@@ -556,12 +635,12 @@ fn list_stems(dir: &Path, ext: &str) -> Vec<String> {
     out
 }
 
-/// Style names available in themes/style (no extensions).
+/// Style names available in style/ (no extensions).
 pub fn list_styles() -> Vec<String> {
     list_stems(&style_dir(), "css")
 }
 
-/// Layout names: the adaptive "default" plus custom files in themes/layauts.
+/// Layout names: the adaptive "default" plus custom files in layauts/.
 pub fn list_layauts() -> Vec<String> {
     let mut out = vec!["default".to_string()];
     for stem in list_stems(&layauts_dir(), "layaut") {
@@ -641,6 +720,35 @@ pub fn set_ui_font_weight(name: &str) {
 
 pub fn set_layaut_option(name: &str) {
     set_conf_kv("Layaut", name);
+}
+
+/// Sound preferences: (master volume 0-100, typing sounds, ambient bed).
+/// Everything on by default — a fresh install should be heard.
+pub fn sound_prefs() -> (u32, bool, bool) {
+    let kv = conf_kv();
+    let volume = kv
+        .get("SoundVolume")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|v| v.min(100))
+        .unwrap_or(100);
+    let flag = |key: &str| {
+        kv.get(key)
+            .map(|v| v.trim() != "0")
+            .unwrap_or(true)
+    };
+    (volume, flag("SoundTyping"), flag("SoundAmbient"))
+}
+
+pub fn set_sound_volume(percent: u32) {
+    set_conf_kv("SoundVolume", &percent.min(100).to_string());
+}
+
+pub fn set_sound_typing(on: bool) {
+    set_conf_kv("SoundTyping", if on { "1" } else { "0" });
+}
+
+pub fn set_sound_ambient(on: bool) {
+    set_conf_kv("SoundAmbient", if on { "1" } else { "0" });
 }
 
 /// Grid editor preferences: (snap to grid, columns, rows, widget padding px).
@@ -881,19 +989,42 @@ fn config_dir() -> PathBuf {
     PathBuf::from(home).join(".config").join("ng-term")
 }
 
-/// Creates the config directory, the ng-term.conf file, the themes tree
-/// (look/, style/, layauts/) and (on first run) the sample "tron" theme.
+/// Data directory: ~/.local/share/ng-term. Holds everything a theme is
+/// made of (look/, style/, layauts/, sounds/) — those are data, not
+/// configuration, so they belong under XDG_DATA_HOME while ng-term.conf
+/// stays in the config directory.
+fn data_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("ng-term");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".local").join("share").join("ng-term")
+}
+
+/// Creates the config directory and ng-term.conf, moves a pre-split
+/// themes/ tree into the data directory, creates the data tree (look/,
+/// style/, layauts/, sounds/) and, on first run, the built-in looks.
+/// Sound themes are seeded on every run, so a configuration made before
+/// they existed gains them.
 fn init_tree(dir: &Path) {
-    let themes = dir.join("themes");
-    let themes_existed = themes.is_dir();
-    let look = themes.join("look");
-    let style = themes.join("style");
-    let layauts = themes.join("layauts");
-    for d in [&look, &style, &layauts] {
+    let data = data_dir();
+    migrate_themes_dir(&dir.join("themes"), &data);
+
+    let look = data.join("look");
+    let style = data.join("style");
+    let layauts = data.join("layauts");
+    let sounds = data.join("sounds");
+    for d in [&look, &style, &layauts, &sounds] {
         if let Err(e) = std::fs::create_dir_all(d) {
             eprintln!("ng-term: cannot create {}: {e}", d.display());
             return;
         }
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("ng-term: cannot create {}: {e}", dir.display());
+        return;
     }
 
     let conf = dir.join("ng-term.conf");
@@ -903,9 +1034,10 @@ fn init_tree(dir: &Path) {
             "# ng-term configuration\n\
              #\n\
              # Look=<name>    — picks a complete theme by the Name= field of the\n\
-             #                  metafile ~/.config/ng-term/themes/look/<dir>/meta\n\
-             # Style=<name>   — style file from themes/style (no extension)\n\
-             # Layaut=<name>  — layout file from themes/layauts (no extension)\n\
+             #                  metafile ~/.local/share/ng-term/look/<dir>/meta\n\
+             # Style=<name>   — .css from ~/.local/share/ng-term/style (no extension)\n\
+             # Layaut=<name>  — .layaut from ~/.local/share/ng-term/layauts\n\
+             # Sounds=<name>  — sound theme directory from ~/.local/share/ng-term/sounds\n\
              # TermFont*/UIFont*  — terminal / interface font settings:\n\
              #   *FontSize=<percent> — Term: 50-200, UI: 75-125\n\
              #   *FontFamily=<name>  — family from the settings list\n\
@@ -914,6 +1046,7 @@ fn init_tree(dir: &Path) {
              Look=\n\
              Style=\n\
              Layaut=\n\
+             Sounds=\n\
              TermFontSize=\n\
              TermFontFamily=\n\
              TermFontWeight=\n\
@@ -945,14 +1078,29 @@ fn init_tree(dir: &Path) {
         );
     }
 
-    // Built-in themes are created only when themes/ is first created.
-    if !themes_existed {
-        // Shared styles (one copy; layouts are adaptive, no files needed).
-        for (name, r, g, b, bg, grey, fg, tbg, cur) in BUILTIN_THEMES {
-            // The default style is tron's palette under the name "default".
-            let style_file = if name == "tron" { "default" } else { name };
+    restore_builtin_themes(&look, &style);
+    seed_sound_themes(&sounds);
+    link_default_sounds(&look, &sounds);
+}
+
+/// Writes every built-in style and look file that is MISSING, on every
+/// start. The test is presence by name only — content is never compared,
+/// so an edited file stays the user's, while a deleted one is treated as
+/// a gap to fill. The point is that no sequence of deletions can leave
+/// the program with no themes at all.
+///
+/// These are generated rather than copied from the installed share/
+/// directory on purpose: a style is a dozen lines of text, so producing
+/// it from the palette table keeps the guarantee even when nothing at
+/// all was installed alongside the binary.
+fn restore_builtin_themes(look: &Path, style: &Path) {
+    for (name, r, g, b, bg, grey, fg, tbg, cur) in BUILTIN_THEMES {
+        // The default style is tron's palette under the name "default".
+        let style_file = if name == "tron" { "default" } else { name };
+        let css = style.join(format!("{style_file}.css"));
+        if !css.exists() {
             let _ = std::fs::write(
-                style.join(format!("{style_file}.css")),
+                &css,
                 format!(
                     "/* Colors from the original eDEX-UI theme: {name} */\n\
                      :root {{\n\
@@ -969,23 +1117,229 @@ fn init_tree(dir: &Path) {
                      }}\n"
                 ),
             );
-            // A complete look: metafile + style symlink; the layout is the
-            // adaptive default (no layout symlink needed).
-            let dir = look.join(name);
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let _ = std::fs::write(
-                    dir.join("meta"),
-                    format!(
-                        "Name={name}\nDescription=eDEX-UI '{name}' theme (original colors)\n"
-                    ),
-                );
-                let _ = std::os::unix::fs::symlink(
-                    format!("../../style/{style_file}.css"),
-                    dir.join(format!("{name}.css")),
-                );
+        }
+        // A complete look: metafile + style symlink; the layout is the
+        // adaptive default (no layout symlink needed).
+        let dir = look.join(name);
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        let meta = dir.join("meta");
+        if !meta.exists() {
+            let _ = std::fs::write(
+                &meta,
+                format!("Name={name}\nDescription=eDEX-UI '{name}' theme (original colors)\n"),
+            );
+        }
+        // symlink_metadata(), so a link whose target is momentarily
+        // missing counts as present and is not replaced — the css write
+        // above is what repairs it.
+        let link = dir.join(format!("{name}.css"));
+        if link.symlink_metadata().is_err() {
+            let _ = std::os::unix::fs::symlink(
+                format!("../../style/{style_file}.css"),
+                &link,
+            );
+        }
+    }
+}
+
+/// Moves a pre-split ~/.config/ng-term/themes tree into the data
+/// directory and removes it. Entries that already exist on the data side
+/// are left where they are rather than overwritten, and anything that
+/// could not be moved keeps the old directory alive so nothing is ever
+/// silently lost.
+fn migrate_themes_dir(old: &Path, data: &Path) {
+    if !old.is_dir() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(data) {
+        eprintln!("ng-term: cannot create {}: {e}", data.display());
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(old) else { return };
+    for entry in rd.flatten() {
+        let from = entry.path();
+        let to = data.join(entry.file_name());
+        if !move_merge(&from, &to) {
+            eprintln!("ng-term: cannot move {} to {}", from.display(), to.display());
+        }
+    }
+    // Only succeeds once the directory is empty — exactly the condition
+    // under which dropping it is safe.
+    if std::fs::remove_dir(old).is_ok() {
+        eprintln!(
+            "ng-term: themes moved from {} to {}",
+            old.display(),
+            data.display()
+        );
+    }
+}
+
+/// Moves `from` onto `to`, merging directory into directory so that a
+/// name already taken on the destination side costs only that one entry
+/// instead of its whole subtree. Returns whether `from` was consumed.
+fn move_merge(from: &Path, to: &Path) -> bool {
+    let dest = std::fs::symlink_metadata(to);
+    if dest.is_err() {
+        // Free name: a rename keeps symlinks (and their relative
+        // targets) intact; the copy fallback is only needed for a
+        // cross-filesystem move.
+        if std::fs::rename(from, to).is_ok() {
+            return true;
+        }
+        if copy_tree(from, to).is_ok() {
+            let _ = std::fs::remove_dir_all(from);
+            return true;
+        }
+        return false;
+    }
+    let src_is_dir = std::fs::symlink_metadata(from)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    if !(src_is_dir && dest.map(|m| m.is_dir()).unwrap_or(false)) {
+        // The destination exists and is not a directory to merge into —
+        // whatever is already there wins.
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(from) else { return false };
+    let mut all = true;
+    for entry in rd.flatten() {
+        all &= move_merge(&entry.path(), &to.join(entry.file_name()));
+    }
+    all && std::fs::remove_dir(from).is_ok()
+}
+
+/// Recursive copy that reproduces symlinks as symlinks instead of
+/// following them — a look's *.css/*.layaut/*.sounds entries are
+/// relative links and must stay that way.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(from)?;
+        return std::os::unix::fs::symlink(target, to);
+    }
+    if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)?.flatten() {
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    std::fs::copy(from, to).map(|_| ())
+}
+
+/// Copies the shipped sound themes into sounds/, restoring anything
+/// MISSING file by file. A file that is already there is never touched
+/// regardless of its contents, so replacing a sound with your own keeps
+/// it; deleting one brings the original back on the next start.
+fn seed_sound_themes(sounds: &Path) {
+    let Some(src) = installed_sounds_dir() else { return };
+    // A ~/.local install puts the shipped sets in the data directory
+    // itself, so source and destination are one and the same and there
+    // is nothing to do. Comparing the Options directly would be wrong:
+    // two failed canonicalizations are not a match.
+    let same = match (std::fs::canonicalize(&src), std::fs::canonicalize(sounds)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => src == *sounds,
+    };
+    if same {
+        return;
+    }
+    restore_missing_sounds(&src, sounds);
+}
+
+/// Per-file restore of every shipped sound theme found in `src`.
+fn restore_missing_sounds(src: &Path, sounds: &Path) {
+    let Ok(rd) = std::fs::read_dir(src) else { return };
+    for entry in rd.flatten() {
+        let from = entry.path();
+        if !from.is_dir() {
+            continue;
+        }
+        let Some(name) = from.file_name() else { continue };
+        let to = sounds.join(name);
+        if std::fs::create_dir_all(&to).is_err() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(&from) else { continue };
+        for f in files.flatten() {
+            let p = f.path();
+            if !p.is_file() {
+                continue;
+            }
+            let Some(fname) = p.file_name() else { continue };
+            let dest = to.join(fname);
+            // Presence by name only: whatever is already there is the
+            // user's and stays untouched, whatever its contents.
+            if !dest.exists() {
+                let _ = std::fs::copy(&p, &dest);
             }
         }
     }
+}
+
+/// Gives every look that has no sounds symlink the "default" set, so an
+/// existing look/ tree gains sounds without being recreated.
+fn link_default_sounds(look: &Path, sounds: &Path) {
+    if !sounds.join("default").is_dir() {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(look) else { return };
+    for entry in rd.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        // look_components() reports a missing symlink as "default", so
+        // the presence of a *.sounds entry is what has to be checked.
+        let has_sounds = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten().any(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| x.eq_ignore_ascii_case("sounds"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if has_sounds {
+            continue;
+        }
+        let Some(name) = dir.file_name().and_then(|s| s.to_str()) else { continue };
+        let _ = std::os::unix::fs::symlink(
+            "../../sounds/default",
+            dir.join(format!("{name}.sounds")),
+        );
+    }
+}
+
+/// Directory holding the sound themes shipped with the program:
+/// $PREFIX/share/ng-term/sounds, or ./assets/sounds when running from a
+/// source checkout.
+///
+/// Installed into ~/.local this is the data directory itself, so there
+/// is nothing to copy and seeding stops at the identity check in
+/// seed_sound_themes(). A system install puts it under /usr, from where
+/// the sets are copied into the user's data directory on first run.
+fn installed_sounds_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // Next to the binary: <prefix>/bin/ng-term -> <prefix>/share/ng-term.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(prefix) = exe.parent().and_then(|p| p.parent()) {
+            candidates.push(prefix.join("share").join("ng-term").join("sounds"));
+        }
+    }
+    candidates.push(PathBuf::from("/usr/local/share/ng-term/sounds"));
+    candidates.push(PathBuf::from("/usr/share/ng-term/sounds"));
+    // Source checkout, for `cargo run`. Debug builds only: this one is
+    // relative to the working directory, and a release binary must never
+    // seed itself from whatever happens to sit in the directory it was
+    // started from.
+    #[cfg(debug_assertions)]
+    candidates.push(PathBuf::from("assets/sounds"));
+    candidates.into_iter().find(|p| p.is_dir())
 }
 
 /// Parser for Key=Value files (# and ; comments).
@@ -1003,7 +1357,7 @@ fn parse_kv(text: &str) -> HashMap<String, String> {
     map
 }
 
-/// Searches themes/ for a directory whose metafile has Name=<name>
+/// Searches look/ for a directory whose metafile has Name=<name>
 /// and loads its style (.css) and layout (.layaut).
 fn load_theme(
     themes_dir: &Path,
@@ -1222,6 +1576,173 @@ mod tests {
         assert!(safe_component("/abs").is_none());
         assert!(safe_component("").is_none());
         assert!(safe_component("x\\y").is_none());
+    }
+
+    /// The pre-split themes/ tree moves into the data directory with its
+    /// relative symlinks intact, anything already on the data side wins,
+    /// and the old directory disappears once it is empty.
+    #[test]
+    fn themes_dir_migrates_to_data_dir() {
+        let root = std::env::temp_dir().join("ng-term-migrate-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let old = root.join("config").join("themes");
+        let data = root.join("data");
+
+        std::fs::create_dir_all(old.join("style")).unwrap();
+        std::fs::create_dir_all(old.join("look").join("tron")).unwrap();
+        std::fs::create_dir_all(old.join("layauts")).unwrap();
+        std::fs::write(old.join("style").join("default.css"), ":root {}").unwrap();
+        std::fs::write(old.join("layauts").join("mine.layaut"), "[column]").unwrap();
+        std::fs::write(old.join("look").join("tron").join("meta"), "Name=tron\n").unwrap();
+        std::os::unix::fs::symlink(
+            "../../style/default.css",
+            old.join("look").join("tron").join("tron.css"),
+        )
+        .unwrap();
+        // Already present on the data side: must NOT be overwritten.
+        std::fs::create_dir_all(data.join("layauts")).unwrap();
+        std::fs::write(data.join("layauts").join("keep.layaut"), "kept").unwrap();
+
+        migrate_themes_dir(&old, &data);
+
+        assert!(!old.exists(), "the old themes/ directory must be gone");
+        assert!(data.join("style").join("default.css").is_file());
+        assert!(data.join("look").join("tron").join("meta").is_file());
+        // The symlink survived as a symlink, and its relative target
+        // still resolves now that the themes/ level is gone.
+        let link = data.join("look").join("tron").join("tron.css");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), ":root {}");
+        // The pre-existing layauts/ was kept whole, not replaced.
+        assert_eq!(
+            std::fs::read_to_string(data.join("layauts").join("keep.layaut")).unwrap(),
+            "kept"
+        );
+
+        // Running again on a config that has no themes/ is a no-op.
+        migrate_themes_dir(&old, &data);
+        assert!(data.join("style").join("default.css").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Seeding restores missing sound files without touching the ones
+    /// that are there, and gives every look that lacks one a symlink to
+    /// "default" — and running twice must not disturb anything.
+    #[test]
+    fn sound_themes_seed_and_link() {
+        let root = std::env::temp_dir().join("ng-term-sound-seed-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("share");
+        let sounds = root.join("data").join("sounds");
+        let look = root.join("data").join("look");
+
+        // A shipped set, as the Makefile would install it.
+        std::fs::create_dir_all(src.join("default")).unwrap();
+        std::fs::write(src.join("default").join("meta"), "Click=click.wav\n").unwrap();
+        std::fs::write(src.join("default").join("click.wav"), b"SHIPPED").unwrap();
+        std::fs::write(src.join("default").join("error.wav"), b"SHIPPED").unwrap();
+        // Two looks: one plain, one that already picks its own set.
+        std::fs::create_dir_all(look.join("tron")).unwrap();
+        std::fs::create_dir_all(look.join("matrix")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../sounds/retro",
+            look.join("matrix").join("matrix.sounds"),
+        )
+        .unwrap();
+        // The user replaced one sound and deleted the other.
+        std::fs::create_dir_all(sounds.join("default")).unwrap();
+        std::fs::write(sounds.join("default").join("click.wav"), b"MINE").unwrap();
+
+        restore_missing_sounds(&src, &sounds);
+
+        // Replaced file untouched, deleted file restored.
+        assert_eq!(
+            std::fs::read(sounds.join("default").join("click.wav")).unwrap(),
+            b"MINE"
+        );
+        assert_eq!(
+            std::fs::read(sounds.join("default").join("error.wav")).unwrap(),
+            b"SHIPPED"
+        );
+
+        link_default_sounds(&look, &sounds);
+
+        assert!(sounds.join("default").join("click.wav").is_file());
+        // The plain look gained the default link...
+        let link = look.join("tron").join("tron.sounds");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("../../sounds/default")
+        );
+        // ...and the one with its own choice was left alone.
+        assert_eq!(
+            std::fs::read_link(look.join("matrix").join("matrix.sounds")).unwrap(),
+            PathBuf::from("../../sounds/retro")
+        );
+        assert_eq!(
+            look_components(&look.join("tron")).2.as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            look_components(&look.join("matrix")).2.as_deref(),
+            Some("retro")
+        );
+
+        // Idempotent: a second pass changes nothing.
+        link_default_sounds(&look, &sounds);
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("../../sounds/default")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// No amount of deleting can leave the program without themes: every
+    /// missing built-in file comes back, while edited ones are kept.
+    #[test]
+    fn builtin_themes_restore_only_what_is_missing() {
+        let root = std::env::temp_dir().join("ng-term-restore-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let look = root.join("look");
+        let style = root.join("style");
+        std::fs::create_dir_all(&look).unwrap();
+        std::fs::create_dir_all(&style).unwrap();
+
+        // Empty tree: everything is written.
+        restore_builtin_themes(&look, &style);
+        for (name, ..) in BUILTIN_THEMES {
+            assert!(look.join(name).join("meta").is_file(), "{name} meta");
+            assert!(
+                look.join(name).join(format!("{name}.css")).is_symlink(),
+                "{name} css link"
+            );
+        }
+        assert!(style.join("default.css").is_file());
+        assert!(style.join("matrix.css").is_file());
+        // The symlinks resolve through the restored styles.
+        assert!(std::fs::read_to_string(look.join("tron").join("tron.css"))
+            .unwrap()
+            .contains("--color-r"));
+
+        // The user edits one style and wipes a whole look.
+        std::fs::write(style.join("matrix.css"), "/* mine */").unwrap();
+        std::fs::remove_dir_all(look.join("nord")).unwrap();
+        std::fs::remove_file(style.join("red.css")).unwrap();
+
+        restore_builtin_themes(&look, &style);
+
+        // The edit survived...
+        assert_eq!(
+            std::fs::read_to_string(style.join("matrix.css")).unwrap(),
+            "/* mine */"
+        );
+        // ...the deletions were repaired.
+        assert!(look.join("nord").join("meta").is_file());
+        assert!(look.join("nord").join("nord.css").is_symlink());
+        assert!(std::fs::read_to_string(style.join("red.css"))
+            .unwrap()
+            .contains("--color-r"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! Left column with telemetry, central terminal, right column with network
 //! and files, on-screen keyboard and control panel at the bottom.
 
+mod audio;
 mod config;
 mod gfx;
 mod pty;
@@ -159,6 +160,28 @@ fn main() {
 
     let mut gfx = gfx::Gfx::new(&window);
 
+    // Sound. Optional by design: without a device the program simply
+    // runs silent. The theme's meta file is what maps events to files.
+    let mut audio = audio::Audio::new();
+    if audio.is_none() {
+        eprintln!("ng-term: no audio output available — running silent");
+    }
+    if let (Some(a), Some(dir)) = (audio.as_mut(), config::active_sounds_dir()) {
+        a.load_theme(&dir);
+        let (vol, typing, ambient) = config::sound_prefs();
+        a.set_volume(vol as f32 / 100.0);
+        a.set_typing_enabled(typing);
+        a.set_ambient_enabled(ambient);
+        eprintln!(
+            "ng-term: audio {} Hz, sound theme '{}' ({} events)",
+            a.rate(),
+            dir.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+            a.event_count()
+        );
+    }
+    let mut sfx: Vec<ng_base::sound::Event> = Vec::new();
+    ng_base::sound::emit(ng_base::sound::Event::Boot);
+
     // System telemetry in the background.
     let sys = system::start();
 
@@ -189,6 +212,7 @@ fn main() {
     let mut editor = widgets::editor::Editor::new();
     let mut popup = widgets::popup::Popup::new();
     if let Some(w) = startup_warning {
+        ng_base::sound::emit(ng_base::sound::Event::Alert);
         popup.show(w);
     }
 
@@ -318,6 +342,12 @@ fn main() {
                                 layout_spec = new_cfg.layout;
                                 active_ov =
                                     layout_spec.pick(screen_key(&window)).cloned();
+                                // A new look or sound set means new clips.
+                                if let (Some(a), Some(dir)) =
+                                    (audio.as_mut(), config::active_sounds_dir())
+                                {
+                                    a.load_theme(&dir);
+                                }
                                 if let Some(w) = warn {
                                     popup.show(w);
                                 }
@@ -562,6 +592,7 @@ fn main() {
                             .iter()
                             .position(|tr| tr.contains(mouse.0, mouse.1));
                         if let Some(i) = tab_hit {
+                            ng_base::sound::emit(ng_base::sound::Event::Click);
                             if sessions[i].is_some() {
                                 active = i;
                             } else {
@@ -582,7 +613,11 @@ fn main() {
                                 }
                             }
                         } else if layout.p(widgets::Panel::Filesystem).contains(mouse.0, mouse.1) {
-                            match fsp.click(mouse.0, mouse.1) {
+                            let hit = fsp.click(mouse.0, mouse.1);
+                            if hit.is_some() {
+                                ng_base::sound::emit(ng_base::sound::Event::Click);
+                            }
+                            match hit {
                                 Some(widgets::filesystem::FsEvent::OpenDir(dir)) => {
                                     // Entering a directory = cd in the active tab
                                     // (leading space skips bash history).
@@ -607,6 +642,7 @@ fn main() {
                         } else if let Some(btn) =
                             control.click(mouse.0, mouse.1, layout.p(widgets::Panel::Control), size.height as f32)
                         {
+                            ng_base::sound::emit(ng_base::sound::Event::Click);
                             match btn {
                                 widgets::control::BTN_EXIT => {
                                     eprintln!("ng-term: closed from the control panel");
@@ -702,6 +738,18 @@ fn main() {
                                 Key::Named(NamedKey::Escape) => kb.flash_label("ESC"),
                                 _ => {}
                             }
+                            // Typing: Enter and Backspace have their own
+                            // sounds, every other key shares the rotating
+                            // Key variants.
+                            ng_base::sound::emit(match &key_event.logical_key {
+                                Key::Named(NamedKey::Enter) => {
+                                    ng_base::sound::Event::KeyReturn
+                                }
+                                Key::Named(NamedKey::Backspace) => {
+                                    ng_base::sound::Event::KeyErase
+                                }
+                                _ => ng_base::sound::Event::Key,
+                            });
                             if let Some(s) = sessions[active].as_mut() {
                                 s.pty.write(&bytes);
                                 s.term.view_offset = 0;
@@ -877,7 +925,30 @@ fn main() {
                             }
                         }
 
-                        // 4. Render.
+                        // 4. Sound preferences changed in the SOUND view
+                        // apply immediately, so dragging the volume
+                        // slider is audible while dragging.
+                        if settings.sound_dirty {
+                            settings.sound_dirty = false;
+                            let (vol, typing, ambient) = settings.sound_settings();
+                            if let Some(a) = audio.as_mut() {
+                                a.set_volume(vol);
+                                a.set_typing_enabled(typing);
+                                a.set_ambient_enabled(ambient);
+                            }
+                        }
+
+                        // 5. Play whatever this frame reported. The theme
+                        // decides which file each event maps to; an event
+                        // it says nothing about is silently skipped.
+                        ng_base::sound::drain(&mut sfx);
+                        if let Some(a) = audio.as_mut() {
+                            for e in sfx.iter() {
+                                a.play(*e);
+                            }
+                        }
+
+                        // 6. Render.
                         let atlas = if fonts.atlas_dirty {
                             fonts.atlas_dirty = false;
                             Some(fonts.atlas.clone())
@@ -895,6 +966,15 @@ fn main() {
                 },
                 Event::AboutToWait => {
                     window.request_redraw();
+                }
+                // One exit hook for every way out — the close button,
+                // Ctrl+Shift+Q, the compositor, the last shell dying.
+                // Blocking briefly is the point: the process would
+                // otherwise cut the sound off as it goes.
+                Event::LoopExiting => {
+                    if let Some(a) = audio.as_mut() {
+                        a.play_blocking(ng_base::sound::Event::Shutdown, 1400);
+                    }
                 }
                 _ => {}
             }
@@ -975,6 +1055,7 @@ fn editor_save(
         )
     };
     if let Err(e) = result {
+        ng_base::sound::emit(ng_base::sound::Event::Error);
         popup.show(format!("Cannot save layout '{name}': {e}"));
         return;
     }
@@ -989,7 +1070,10 @@ fn editor_save(
     *layout_spec = new_cfg.layout;
     *active_ov = layout_spec.pick(key).cloned();
     if let Some(wmsg) = warn {
+        ng_base::sound::emit(ng_base::sound::Event::Alert);
         popup.show(wmsg);
+    } else {
+        ng_base::sound::emit(ng_base::sound::Event::Save);
     }
     editor.stop();
 }

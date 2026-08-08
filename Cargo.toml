@@ -35,6 +35,8 @@ vte = "0.13"
 sysinfo = "0.30"
 
 # PTY / fork / exec (Linux)
+# Raw system calls: the PTY (openpty/fork/execvp) and dlopen for the
+# ALSA output in audio.rs — audio needs no build-time dependency.
 libc = "0.2"
 
 # Clock / date
