@@ -404,7 +404,7 @@ fn main() {
                                 widgets::editor::EditorHit::SaveAs => {
                                     editor.naming = Some(String::new());
                                 }
-                                widgets::editor::EditorHit::Cancel => {
+                                widgets::editor::EditorHit::Exit => {
                                     // Back to the settings window, GRID view.
                                     editor.stop();
                                     settings.show_grid();
@@ -416,8 +416,49 @@ fn main() {
                             }
                             return;
                         }
-                        // An open settings window captures all clicks.
+                        // An open settings window captures all clicks —
+                        // except the editor buttons, which share its plane.
                         if settings.open {
+                            if editor.active {
+                                if let Some(hit) = editor.buttons_hit(
+                                    mouse.0,
+                                    mouse.1,
+                                    size.width as f32,
+                                    size.height as f32,
+                                ) {
+                                    match hit {
+                                        widgets::editor::EditorHit::Settings => {
+                                            // Toggle: hide the window.
+                                            settings.close();
+                                        }
+                                        widgets::editor::EditorHit::Save => {
+                                            let name = config::effective_components()
+                                                .1
+                                                .unwrap_or_else(|| "default".to_string());
+                                            editor_save(
+                                                &mut editor,
+                                                &name,
+                                                false,
+                                                &mut theme,
+                                                &mut layout_spec,
+                                                &mut active_ov,
+                                                &mut popup,
+                                                screen_key(&window),
+                                            );
+                                        }
+                                        widgets::editor::EditorHit::SaveAs => {
+                                            settings.close();
+                                            editor.naming = Some(String::new());
+                                        }
+                                        widgets::editor::EditorHit::Exit => {
+                                            editor.stop();
+                                            settings.show_grid();
+                                        }
+                                        widgets::editor::EditorHit::Handled => {}
+                                    }
+                                    return;
+                                }
+                            }
                             if settings.click(
                                 mouse.0,
                                 mouse.1,
@@ -747,12 +788,12 @@ fn main() {
                                 ];
                                 for (panel, f) in tele {
                                     let r = layout.p(panel);
-                                    ctx.panel_scale = ctx.panel_font_scale(&r);
+                                    ctx.panel_scale = ctx.panel_font_scale(&r, panel);
                                     f(&mut ctx, r, &snap);
                                     ctx.panel_scale = 1.0;
                                 }
                                 let r = layout.p(P::Processes);
-                                ctx.panel_scale = ctx.panel_font_scale(&r);
+                                ctx.panel_scale = ctx.panel_font_scale(&r, P::Processes);
                                 widgets::processes::draw(&mut ctx, r, &snap);
                                 ctx.panel_scale = 1.0;
                             }
@@ -777,7 +818,8 @@ fn main() {
                             // miniatures inside the ADD WIDGET window.
                             if editor.active {
                                 editor.draw(&mut ctx, |ctx, panel, r| {
-                                    ctx.panel_scale = ctx.panel_font_scale(&r);
+                                    ctx.panel_scale =
+                                        ctx.panel_font_scale(&r, widgets::Panel::ALL[panel]);
                                     match widgets::Panel::ALL[panel] {
                                         P::Clock => widgets::clock::draw(ctx, r, &snap),
                                         P::Sysinfo => widgets::sysinfo::draw(ctx, r, &snap),
@@ -807,6 +849,11 @@ fn main() {
                                 });
                             }
                             settings.draw(&mut ctx);
+                            // With the settings window open over the editor
+                            // its buttons share the window's plane.
+                            if editor.active && settings.open {
+                                editor.draw_buttons(&mut ctx);
+                            }
                             // Warning popup on the very top.
                             popup.draw(&mut ctx);
 

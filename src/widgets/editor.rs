@@ -34,8 +34,8 @@ pub enum EditorHit {
     Save,
     /// SAVE AS — open the name prompt.
     SaveAs,
-    /// CANCEL — leave the editor without saving.
-    Cancel,
+    /// EXIT — leave the editor without saving.
+    Exit,
 }
 
 /// Cursor shape the editor wants at a given position.
@@ -210,12 +210,12 @@ impl Editor {
         self.changes_vs(&LayoutSpec { panels: self.initial })
     }
 
-    fn save_buttons(w: f32, h: f32) -> [Rect; 5] {
+    fn save_buttons(w: f32, h: f32) -> [Rect; 6] {
         let bw = (w * 0.10).max(110.0);
         let bh = (h * 0.045).max(30.0);
         let gap = bh * 0.35;
         let x = w - bw - w * 0.012;
-        let y1 = h - 5.0 * bh - 4.0 * gap - h * 0.02;
+        let y1 = h - 6.0 * bh - 5.0 * gap - h * 0.02;
         std::array::from_fn(|i| Rect::new(x, y1 + i as f32 * (bh + gap), bw, bh))
     }
 
@@ -336,6 +336,45 @@ impl Editor {
         }
     }
 
+    /// Hit-test of the editor buttons only — also used while the
+    /// settings window is open over the editor (the buttons share its
+    /// plane and stay clickable).
+    pub fn buttons_hit(&mut self, x: f32, y: f32, w: f32, h: f32) -> Option<EditorHit> {
+        let btns = Self::save_buttons(w, h);
+        if btns[0].contains(x, y) {
+            // SETTINGS — show/hide the window over the editor.
+            self.flash = Some((0, Instant::now()));
+            return Some(EditorHit::Settings);
+        }
+        if btns[1].contains(x, y) {
+            // ADD WIDGET — toggle the list window (handled internally).
+            self.flash = Some((1, Instant::now()));
+            self.add_open = true;
+            return Some(EditorHit::Handled);
+        }
+        if btns[2].contains(x, y) {
+            self.flash = Some((2, Instant::now()));
+            return Some(EditorHit::Save);
+        }
+        if btns[3].contains(x, y) {
+            self.flash = Some((3, Instant::now()));
+            return Some(EditorHit::SaveAs);
+        }
+        if btns[4].contains(x, y) {
+            // CANCEL — revert the unsaved changes, stay in the editor.
+            self.flash = Some((4, Instant::now()));
+            self.rects = self.initial;
+            self.drag = None;
+            self.grow = None;
+            return Some(EditorHit::Handled);
+        }
+        if btns[5].contains(x, y) {
+            self.flash = Some((5, Instant::now()));
+            return Some(EditorHit::Exit);
+        }
+        None
+    }
+
     /// Mouse press. Only meaningful while active.
     pub fn mouse_down(&mut self, x: f32, y: f32, w: f32, h: f32) -> EditorHit {
         if self.naming.is_some() {
@@ -357,29 +396,8 @@ impl Editor {
             self.add_open = false;
             return EditorHit::Handled;
         }
-        let btns = Self::save_buttons(w, h);
-        if btns[0].contains(x, y) {
-            // SETTINGS — the window opens over the editor.
-            self.flash = Some((0, Instant::now()));
-            return EditorHit::Settings;
-        }
-        if btns[1].contains(x, y) {
-            // ADD WIDGET — toggle the list window (handled internally).
-            self.flash = Some((1, Instant::now()));
-            self.add_open = true;
-            return EditorHit::Handled;
-        }
-        if btns[2].contains(x, y) {
-            self.flash = Some((2, Instant::now()));
-            return EditorHit::Save;
-        }
-        if btns[3].contains(x, y) {
-            self.flash = Some((3, Instant::now()));
-            return EditorHit::SaveAs;
-        }
-        if btns[4].contains(x, y) {
-            self.flash = Some((4, Instant::now()));
-            return EditorHit::Cancel;
+        if let Some(hit) = self.buttons_hit(x, y, w, h) {
+            return hit;
         }
         if let Some((i, l, rr, t, b)) = self.panel_at(x, y, w, h) {
             let r = self.px_rect(i, w, h);
@@ -522,6 +540,25 @@ impl Editor {
             ((w / self.cols as f32 * 3.0).max(m), (h / self.rows as f32 * 2.0).max(m))
         } else {
             ((w * 0.20).max(m), (h * 0.25).max(m))
+        }
+    }
+
+    /// Draws just the editor's button stack — called from draw() and
+    /// again ON TOP of the settings window when it is open over the
+    /// editor, so the buttons share the window's plane.
+    pub fn draw_buttons(&mut self, ctx: &mut Ctx) {
+        let (w, h) = (ctx.w, ctx.h);
+        let (mx, my) = ctx.mouse;
+        let now = Instant::now();
+        let btns = Self::save_buttons(w, h);
+        let labels = ["SETTINGS", "ADD WIDGET", "SAVE", "SAVE AS", "CANCEL", "EXIT"];
+        for (i, br) in btns.iter().enumerate() {
+            let hover = !self.add_open && self.naming.is_none() && br.contains(mx, my);
+            let flash = self
+                .flash
+                .map(|(fi, t)| fi == i && now.duration_since(t).as_secs_f32() < 0.15)
+                .unwrap_or(false);
+            Self::draw_button(ctx, br, labels[i], hover, flash);
         }
     }
 
@@ -681,18 +718,8 @@ impl Editor {
                 .line(xr.right() - m, xr.y + m, xr.x + m, xr.bottom() - m, 1.5, c);
         }
 
-        // ADD WIDGET / SAVE / SAVE AS / CANCEL in the bottom-right corner.
-        let now = Instant::now();
-        let btns = Self::save_buttons(w, h);
-        let labels = ["SETTINGS", "ADD WIDGET", "SAVE", "SAVE AS", "CANCEL"];
-        for (i, br) in btns.iter().enumerate() {
-            let hover = !self.add_open && self.naming.is_none() && br.contains(mx, my);
-            let flash = self
-                .flash
-                .map(|(fi, t)| fi == i && now.duration_since(t).as_secs_f32() < 0.15)
-                .unwrap_or(false);
-            Self::draw_button(ctx, br, labels[i], hover, flash);
-        }
+        // The editor buttons in the bottom-right corner.
+        self.draw_buttons(ctx);
 
         // Hint line in the bottom-left corner.
         let hint_px = ctx.font_px(0.9);
