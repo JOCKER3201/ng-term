@@ -10,12 +10,10 @@ license = "MIT"
 # The toolkit: drawing, fonts, themes, the responsive layout engine,
 # interface objects, the widget contract and its scripting, terminal
 # emulation, telemetry and sound.
-# TEMPORARY path dependency until the repository exists.
-lib-ng = { path = "../lib-ng" }
+lib-ng = { git = "https://github.com/JOCKER3201/lib-ng" }
 
 # The widgets shipped with the program.
-# TEMPORARY path dependency while the toolkit merge settles.
-widgets = { path = "../widgets" }
+widgets = { git = "https://github.com/JOCKER3201/widgets" }
 
 # Window + events (Linux: Wayland/X11 backends)
 winit = "0.29"
