@@ -178,6 +178,9 @@ pub fn start() -> Arc<Mutex<Snapshot>> {
             top.truncate(8);
 
             let load = System::load_average();
+            // Read the battery (blocking /sys I/O) BEFORE taking the lock,
+            // so the UI thread is never blocked waiting on sysfs.
+            let battery = battery();
 
             {
                 let mut s = shared.lock().unwrap();
@@ -202,7 +205,7 @@ pub fn start() -> Arc<Mutex<Snapshot>> {
                     ipv4: ipv4.clone(),
                     ping_ms,
                     online: if offline_mode { false } else { online },
-                    battery: battery(),
+                    battery,
                     manufacturer: manufacturer.clone(),
                     model: model.clone(),
                     chassis: chassis.clone(),

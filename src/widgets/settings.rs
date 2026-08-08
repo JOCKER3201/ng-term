@@ -79,7 +79,7 @@ pub struct Settings {
     dragging_size: Option<Sect>,
     slider_rect: [Rect; 2],
     dropdown: Option<Dropdown>,
-    /// Moment otwarcia listy — do animacji harmonijki.
+    /// When the dropdown was opened — drives the accordion animation.
     dropdown_since: Option<Instant>,
     /// Grid editor preferences (GRID view).
     grid_snap: bool,

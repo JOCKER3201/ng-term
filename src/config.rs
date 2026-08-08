@@ -185,7 +185,7 @@ fn split_layaut_sections(text: &str) -> (String, Vec<ResOverride>) {
                 let Some((k, v)) = trimmed.split_once('=') else { continue };
                 let nums: Vec<f32> = v
                     .split_whitespace()
-                    .filter_map(|t| t.parse::<f32>().ok())
+                    .filter_map(|t| t.parse::<f32>().ok().filter(|x| x.is_finite()))
                     .collect();
                 if nums.len() != 4 {
                     continue;
@@ -262,7 +262,15 @@ fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
         let Some(c) = cur.as_mut() else { continue };
         let Some((k, v)) = line.split_once('=') else { continue };
         let (k, v) = (k.trim(), v.trim());
-        let num = |v: &str| v.trim_end_matches(['%', 'p', 'x']).trim().parse::<f32>().ok();
+        // Reject non-finite ("nan"/"inf") so they never reach the layout
+        // engine, where NaN would produce off-screen/garbled geometry.
+        let num = |v: &str| {
+            v.trim_end_matches(['%', 'p', 'x'])
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|x| x.is_finite())
+        };
         match k {
             "basis" => c.basis = num(v).unwrap_or(c.basis),
             "min" => c.min = num(v).unwrap_or(c.min),
@@ -273,7 +281,11 @@ fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
             "panel" => {
                 let mut it = v.split_whitespace();
                 let name = it.next().unwrap_or("");
-                let weight = it.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(50.0);
+                let weight = it
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .filter(|x| x.is_finite())
+                    .unwrap_or(50.0);
                 match Panel::from_name(name) {
                     Some(p) => c.panels.push((p, weight.max(1.0))),
                     None => eprintln!("ng-term: unknown panel in .layaut: {name}"),
@@ -477,13 +489,30 @@ pub fn shellrc_path() -> PathBuf {
     config_dir().join("shellrc")
 }
 
-/// Current Look= value from ng-term.conf (if non-empty).
+/// Accepts a config value only if it is a single safe path component
+/// (no separators, not "..", not absolute) — so Look=/Style=/Layaut=
+/// values joined into themes/* paths cannot escape the config directory.
+fn safe_component(name: &str) -> Option<String> {
+    let n = name.trim();
+    if n.is_empty() || n == "." || n == ".." {
+        return None;
+    }
+    if n.contains('/') || n.contains('\\') || n.contains('\0') {
+        return None;
+    }
+    // Must be exactly one normal path component.
+    let mut comps = Path::new(n).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(c)), None) if c == n => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Current Look= value from ng-term.conf (if a safe, non-empty name).
 pub fn current_theme_name() -> Option<String> {
     let text = std::fs::read_to_string(config_dir().join("ng-term.conf")).ok()?;
     let kv = parse_kv(&text);
-    kv.get("Look")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    kv.get("Look").and_then(|s| safe_component(s))
 }
 
 /// Saves the look choice to ng-term.conf, preserving the rest of the file.
@@ -543,20 +572,14 @@ pub fn list_layauts() -> Vec<String> {
     out
 }
 
-/// Current Style= value from ng-term.conf (if non-empty).
+/// Current Style= value from ng-term.conf (if a safe, non-empty name).
 pub fn current_style_name() -> Option<String> {
-    conf_kv()
-        .get("Style")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    conf_kv().get("Style").and_then(|s| safe_component(s))
 }
 
-/// Current Layaut= value from ng-term.conf (if non-empty).
+/// Current Layaut= value from ng-term.conf (if a safe, non-empty name).
 pub fn current_layaut_name() -> Option<String> {
-    conf_kv()
-        .get("Layaut")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    conf_kv().get("Layaut").and_then(|s| safe_component(s))
 }
 
 pub fn set_style_option(name: &str) {
@@ -1156,6 +1179,7 @@ fn parse_layaut(src: &str) -> LayoutSpec {
                     .trim_end_matches("vh")
                     .parse::<f32>()
                     .ok()
+                    .filter(|x| x.is_finite())
             })
             .collect();
         if nums.len() != 4 {
@@ -1188,6 +1212,18 @@ mod tests {
     /// SAVE AS writes the full base recording its screen; SAVE on the
     /// base's screen rewrites the base, SAVE on other screens stores
     /// only the changes in their sections; everything else is preserved.
+    #[test]
+    fn safe_component_blocks_traversal() {
+        assert!(safe_component("tron").is_some());
+        assert!(safe_component("my-layaut_2").is_some());
+        assert!(safe_component("../../etc/passwd").is_none());
+        assert!(safe_component("..").is_none());
+        assert!(safe_component("a/b").is_none());
+        assert!(safe_component("/abs").is_none());
+        assert!(safe_component("").is_none());
+        assert!(safe_component("x\\y").is_none());
+    }
+
     #[test]
     fn overrides_roundtrip() {
         let name = "unittest-roundtrip";

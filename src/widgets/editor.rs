@@ -463,31 +463,38 @@ impl Editor {
                 let m = self.min_outer();
                 let min_w = if self.snap { cw.max(m) } else { m };
                 let min_h = if self.snap { ch.max(m) } else { m };
+                // In a tiny window (or a dense grid) the minimum size can
+                // exceed the space available on the opposite side, which
+                // would make the clamp bounds cross (lo > hi) and panic;
+                // oclamp orders them so it never does.
+                let oclamp = |v: f32, lo: f32, hi: f32| {
+                    if hi < lo { lo } else { v.clamp(lo, hi) }
+                };
                 if l {
-                    x0 = x.clamp(0.0, x1 - min_w);
+                    x0 = oclamp(x, 0.0, x1 - min_w);
                     if self.snap {
-                        x0 = ((x0 / cw).round() * cw).clamp(0.0, x1 - min_w);
+                        x0 = oclamp((x0 / cw).round() * cw, 0.0, x1 - min_w);
                     }
                 }
                 if rr {
-                    x1 = x.clamp(x0 + min_w, w);
+                    x1 = oclamp(x, x0 + min_w, w);
                     if self.snap {
-                        x1 = ((x1 / cw).round() * cw).clamp(x0 + min_w, w);
+                        x1 = oclamp((x1 / cw).round() * cw, x0 + min_w, w);
                     }
                 }
                 if t {
-                    y0 = y.clamp(0.0, y1 - min_h);
+                    y0 = oclamp(y, 0.0, y1 - min_h);
                     if self.snap {
-                        y0 = ((y0 / ch).round() * ch).clamp(0.0, y1 - min_h);
+                        y0 = oclamp((y0 / ch).round() * ch, 0.0, y1 - min_h);
                     }
                 }
                 if b {
-                    y1 = y.clamp(y0 + min_h, h);
+                    y1 = oclamp(y, y0 + min_h, h);
                     if self.snap {
-                        y1 = ((y1 / ch).round() * ch).clamp(y0 + min_h, h);
+                        y1 = oclamp((y1 / ch).round() * ch, y0 + min_h, h);
                     }
                 }
-                self.rects[i] = pct(Rect::new(x0, y0, x1 - x0, y1 - y0), w, h);
+                self.rects[i] = pct(Rect::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)), w, h);
             }
         }
     }

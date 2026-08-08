@@ -49,6 +49,16 @@ impl Pty {
             return Err(io::Error::last_os_error());
         }
 
+        // The master must not leak into forked children (and their execs):
+        // without CLOEXEC every new shell inherits the PTY fds of the
+        // already-open sessions.
+        unsafe {
+            let flags = libc::fcntl(master, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(master, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
         let cwd_c = cwd.and_then(|p| CString::new(p.as_os_str().as_bytes()).ok());
 
@@ -59,12 +69,31 @@ impl Pty {
         let rc_c = CString::new(shellrc.as_os_str().as_bytes()).unwrap_or_default();
         let init_flag = CString::new("--init-file").unwrap();
 
+        // Everything the child needs is built HERE, before fork(): the
+        // child of a multithreaded process may only call async-signal-safe
+        // functions between fork and exec — no allocation (CString, Vec).
+        let prog = CString::new(shell.as_str()).unwrap_or_default();
+        let argv0 = prog.clone();
+        let argv: Vec<*const libc::c_char> = if use_rc {
+            vec![argv0.as_ptr(), init_flag.as_ptr(), rc_c.as_ptr(), std::ptr::null()]
+        } else {
+            vec![argv0.as_ptr(), std::ptr::null()]
+        };
+
         let pid = unsafe { libc::fork() };
         if pid < 0 {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            // fork failed: neither fd is owned by a Pty yet — close both.
+            unsafe {
+                libc::close(master);
+                libc::close(slave);
+            }
+            return Err(err);
         }
         if pid == 0 {
-            // Child process: attach the slave as the controlling terminal and exec the shell.
+            // Child process: attach the slave as the controlling terminal
+            // and exec the shell. Only async-signal-safe calls below — the
+            // CStrings/argv were allocated before the fork.
             unsafe {
                 libc::close(master);
                 libc::setsid();
@@ -79,19 +108,7 @@ impl Pty {
                 if let Some(ref d) = cwd_c {
                     libc::chdir(d.as_ptr());
                 }
-                let prog = CString::new(shell.as_str()).unwrap();
-                let argv0 = CString::new(shell.as_str()).unwrap();
-                let args = if use_rc {
-                    vec![
-                        argv0.as_ptr(),
-                        init_flag.as_ptr(),
-                        rc_c.as_ptr(),
-                        std::ptr::null(),
-                    ]
-                } else {
-                    vec![argv0.as_ptr(), std::ptr::null()]
-                };
-                libc::execvp(prog.as_ptr(), args.as_ptr());
+                libc::execvp(prog.as_ptr(), argv.as_ptr());
                 // If execvp failed:
                 libc::_exit(127);
             }
@@ -159,6 +176,11 @@ impl Drop for Pty {
         unsafe {
             libc::kill(self.child, libc::SIGHUP);
             libc::close(self.master);
+            // Reap the child so it does not linger as a zombie. Closing
+            // the master gives the shell EOF and SIGHUP terminates it, so
+            // this returns promptly (a zombie is reaped immediately).
+            let mut status = 0;
+            libc::waitpid(self.child, &mut status, 0);
         }
     }
 }

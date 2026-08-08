@@ -170,8 +170,15 @@ fn main() {
     // Terminal sessions (tabs). Slot 0 starts immediately.
     let mut grid = (80usize, 24usize);
     let mut sessions: Vec<Option<Session>> = (0..TAB_COUNT).map(|_| None).collect();
-    sessions[0] =
-        Some(Session::spawn(grid.0, grid.1, &home).expect("cannot start PTY"));
+    match Session::spawn(grid.0, grid.1, &home) {
+        Ok(s) => sessions[0] = Some(s),
+        Err(e) => {
+            // No PTY = the terminal cannot run; exit cleanly with a
+            // message instead of a panic backtrace.
+            eprintln!("ng-term: cannot start the shell (PTY): {e}");
+            return;
+        }
+    }
     let mut active: usize = 0;
 
     // Panel state.
@@ -743,6 +750,9 @@ fn main() {
                         if w < 8.0 || h < 8.0 {
                             return;
                         }
+                        // Perform any deferred glyph-atlas reset at the frame
+                        // boundary, never mid-frame (see font.rs).
+                        fonts.begin_frame();
                         dl.clear();
                         let snap = sys.lock().unwrap().clone();
                         let mut ctx = widgets::Ctx {
@@ -1044,6 +1054,7 @@ fn run_resolution_dialog(
                     WindowEvent::RedrawRequested => {
                         let size = window.inner_size();
                         let (w, h) = (size.width as f32, size.height as f32);
+                        fonts.begin_frame();
                         dl.clear();
                         let mut ctx = widgets::Ctx {
                             dl: &mut dl,
