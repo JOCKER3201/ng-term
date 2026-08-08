@@ -391,6 +391,9 @@ fn main() {
                         }
                         if settings.open && settings.release() {
                                 let (new_cfg, warn) = config::resolve();
+                                // Sizes travel with the layout, so a new
+                                // layout brings its own.
+                                ng::base::set_panel_sizes(&new_cfg.layout.sizes);
                                 theme = new_cfg.theme;
                                 layout_spec = new_cfg.layout;
                                 active_ov =
@@ -556,6 +559,9 @@ fn main() {
                                 size.height as f32,
                             ) {
                                 let (new_cfg, warn) = config::resolve();
+                                // Sizes travel with the layout, so a new
+                                // layout brings its own.
+                                ng::base::set_panel_sizes(&new_cfg.layout.sizes);
                                 theme = new_cfg.theme;
                                 layout_spec = new_cfg.layout;
                                 active_ov =
@@ -1128,6 +1134,9 @@ fn editor_save(
         config::select_layaut(name);
     }
     let (new_cfg, warn) = config::resolve();
+                                // Sizes travel with the layout, so a new
+                                // layout brings its own.
+                                ng::base::set_panel_sizes(&new_cfg.layout.sizes);
     *theme = new_cfg.theme;
     *layout_spec = new_cfg.layout;
     *active_ov = layout_spec.pick(key).cloned();

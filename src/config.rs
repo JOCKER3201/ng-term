@@ -73,11 +73,15 @@ pub struct ResOverride {
 pub struct LayoutDef {
     pub base: LayoutMode,
     pub overrides: Vec<ResOverride>,
+    /// Per-panel reference and minimum heights the layout asks for.
+    /// Sizes belong to the layout, not to the widget: the same widget
+    /// may be given a different reference box by a different layout.
+    pub sizes: Vec<(Panel, f32, f32)>,
 }
 
 impl LayoutDef {
     fn from_base(base: LayoutMode) -> Self {
-        LayoutDef { base, overrides: Vec::new() }
+        LayoutDef { base, overrides: Vec::new(), sizes: Vec::new() }
     }
 
     /// The override matching the given screen (resolution + diagonal).
@@ -150,7 +154,9 @@ pub fn load() -> (Config, Option<String>) {
     // The registry must exist before anything parses a layout: panels
     // are resolved by name against it.
     ng::base::set_registry(load_widget_registry());
-    resolve()
+    let (cfg, warning) = resolve();
+    ng::base::set_panel_sizes(&cfg.layout.sizes);
+    (cfg, warning)
 }
 
 /// Layout by name: a custom file from layauts/ — flexbox format
@@ -233,9 +239,13 @@ fn parse_layaut_file(text: &str, name: &str) -> LayoutDef {
             .and_then(|(k, _)| Panel::from_name(k.trim()))
             .is_some()
     });
+    let mut sizes: Vec<(Panel, f32, f32)> = Vec::new();
     let base = if base_text.contains("[column]") {
         match parse_flex_layaut(&base_text) {
-            Some(fl) => LayoutMode::Custom(fl),
+            Some((fl, s)) => {
+                sizes = s;
+                LayoutMode::Custom(fl)
+            }
             None => {
                 eprintln!(
                     "ng-term: no valid columns in '{name}.layaut' — using the default layout"
@@ -249,13 +259,14 @@ fn parse_layaut_file(text: &str, name: &str) -> LayoutDef {
         // Overrides only: the built-in default is the base.
         LayoutMode::Flex
     };
-    LayoutDef { base, overrides }
+    LayoutDef { base, overrides, sizes }
 }
 
 /// Parses the flexbox .layaut format (see the module header).
-fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
+fn parse_flex_layaut(src: &str) -> Option<(FlexLayaut, Vec<(Panel, f32, f32)>)> {
     let mut columns: Vec<FlexColumn> = Vec::new();
     let mut cur: Option<FlexColumn> = None;
+    let mut sizes: Vec<(Panel, f32, f32)> = Vec::new();
     for line in src.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -296,6 +307,9 @@ fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
             "collapse" => c.collapse = num(v).unwrap_or(0.0) as u32,
             "gap" => c.gap = num(v).unwrap_or(c.gap),
             "panel" => {
+                // "<name> <weight> [ref <vh>] [min <vh>]" — the sizes are
+                // the layout's business, not the widget's, so they are
+                // written here next to the placement.
                 let mut it = v.split_whitespace();
                 let name = it.next().unwrap_or("");
                 let weight = it
@@ -303,8 +317,29 @@ fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
                     .and_then(|t| t.parse::<f32>().ok())
                     .filter(|x| x.is_finite())
                     .unwrap_or(50.0);
+                let mut ref_h = 0.0f32;
+                let mut min_h = 0.0f32;
+                while let Some(key) = it.next() {
+                    let val = it
+                        .next()
+                        .and_then(|t| t.parse::<f32>().ok())
+                        .filter(|x| x.is_finite() && *x > 0.0)
+                        .unwrap_or(0.0);
+                    match key {
+                        "ref" => ref_h = val,
+                        "min" => min_h = val,
+                        other => {
+                            eprintln!("ng-term: unknown panel field in .layaut: {other}")
+                        }
+                    }
+                }
                 match Panel::from_name(name) {
-                    Some(p) => c.panels.push((p, weight.max(1.0))),
+                    Some(p) => {
+                        c.panels.push((p, weight.max(1.0)));
+                        if ref_h > 0.0 || min_h > 0.0 {
+                            sizes.push((p, ref_h, min_h));
+                        }
+                    }
                     None => eprintln!("ng-term: unknown panel in .layaut: {name}"),
                 }
             }
@@ -318,7 +353,7 @@ fn parse_flex_layaut(src: &str) -> Option<FlexLayaut> {
     if columns.is_empty() {
         None
     } else {
-        Some(FlexLayaut { columns })
+        Some((FlexLayaut { columns }, sizes))
     }
 }
 
@@ -1952,6 +1987,38 @@ mod tests {
                 c.name
             );
         }
+    }
+
+    /// Sizes are a layout property: a .layaut names them next to the
+    /// placement, and a widget directory carries none.
+    #[test]
+    fn a_layout_carries_the_panel_sizes() {
+        let (fl, sizes) = parse_flex_layaut(
+            "[column]\n\
+             basis = 20\n\
+             panel = clock 7.0 ref 9.5 min 4.0\n\
+             panel = cpu 15.0\n",
+        )
+        .expect("the column should parse");
+        assert_eq!(fl.columns.len(), 1);
+        assert_eq!(fl.columns[0].panels.len(), 2);
+        // Only the panel that named sizes contributes any.
+        assert_eq!(sizes.len(), 1);
+        assert_eq!(sizes[0].0, wp("clock"));
+        assert_eq!(sizes[0].1, 9.5);
+        assert_eq!(sizes[0].2, 4.0);
+
+        // Installing them changes what the panel reports, and a panel
+        // the layout said nothing about keeps its default.
+        ng::base::set_panel_sizes(&sizes);
+        assert_eq!(wp("clock").ref_h_vh(), 9.5);
+        assert_eq!(wp("clock").min_h_vh(), 4.0);
+        let cpu_default = ng::base::default_sizes()[wp("cpu").idx()];
+        assert_eq!(wp("cpu").ref_h_vh(), cpu_default.0);
+
+        // Back to the defaults, so the other tests see a clean table.
+        ng::base::set_panel_sizes(&[]);
+        assert_eq!(wp("clock").ref_h_vh(), ng::base::default_sizes()[wp("clock").idx()].0);
     }
 
     #[test]
