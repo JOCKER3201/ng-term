@@ -14,7 +14,7 @@ mod widgets;
 // terminal emulation) lives in the external lib-ng-base crate; re-export
 // its modules under crate:: so the rest of the code links against them
 // like before. This tree keeps only the Linux-specific parts.
-pub use ng_base::{draw, flex, font, term, theme};
+pub use ng::{draw, flex, font, term, theme};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -179,8 +179,8 @@ fn main() {
             a.event_count()
         );
     }
-    let mut sfx: Vec<ng_base::sound::Event> = Vec::new();
-    ng_base::sound::emit(ng_base::sound::Event::Boot);
+    let mut sfx: Vec<ng::sound::Event> = Vec::new();
+    ng::sound::emit(ng::sound::Event::Boot);
 
     // System telemetry in the background.
     let sys = system::start();
@@ -218,11 +218,11 @@ fn main() {
             // failing that, the compiled renderer registered under the
             // same name — which is all the interactive widgets have.
             if let Some(script) = config::widget_script(p.name()) {
-                return Some(Box::new(ng_widgets::script::ScriptWidget::new(script))
+                return Some(Box::new(ng::script::ScriptWidget::new(script))
                     as Box<dyn widgets::Widget>);
             }
             match config::widget_desc(p.name()) {
-                Some(d) => Some(Box::new(ng_widgets::desc::DescWidget::new(d))
+                Some(d) => Some(Box::new(ng::desc::DescWidget::new(d))
                     as Box<dyn widgets::Widget>),
                 None => widget_set.make(p.name()),
             }
@@ -233,7 +233,7 @@ fn main() {
     let mut editor = widgets::editor::Editor::new();
     let mut popup = widgets::popup::Popup::new();
     if let Some(w) = startup_warning {
-        ng_base::sound::emit(ng_base::sound::Event::Alert);
+        ng::sound::emit(ng::sound::Event::Alert);
         popup.show(w);
     }
 
@@ -349,6 +349,7 @@ fn main() {
                                     tabs: &occupied,
                                     tab_active: active,
                                     shell_cwd: None,
+                                    t: start.elapsed().as_secs_f64(),
                                     window: (size.width as f32, size.height as f32),
                                 };
                                 widget_inst
@@ -660,6 +661,7 @@ fn main() {
                                 shell_cwd: sessions[active]
                                     .as_ref()
                                     .and_then(|s| s.pty.child_cwd()),
+                                t: start.elapsed().as_secs_f64(),
                                 window: (size.width as f32, size.height as f32),
                             };
                             widget_inst
@@ -674,7 +676,7 @@ fn main() {
                             action,
                             widgets::Action::None | widgets::Action::Bytes(_)
                         ) {
-                            ng_base::sound::emit(ng_base::sound::Event::Click);
+                            ng::sound::emit(ng::sound::Event::Click);
                         }
                         match action {
                             widgets::Action::Bytes(bytes) => {
@@ -826,14 +828,14 @@ fn main() {
                             // Typing: Enter and Backspace have their own
                             // sounds, every other key shares the rotating
                             // Key variants.
-                            ng_base::sound::emit(match &key_event.logical_key {
+                            ng::sound::emit(match &key_event.logical_key {
                                 Key::Named(NamedKey::Enter) => {
-                                    ng_base::sound::Event::KeyReturn
+                                    ng::sound::Event::KeyReturn
                                 }
                                 Key::Named(NamedKey::Backspace) => {
-                                    ng_base::sound::Event::KeyErase
+                                    ng::sound::Event::KeyErase
                                 }
-                                _ => ng_base::sound::Event::Key,
+                                _ => ng::sound::Event::Key,
                             });
                             if let Some(s) = sessions[active].as_mut() {
                                 s.pty.write(&bytes);
@@ -930,6 +932,7 @@ fn main() {
                                     tabs: &occupied,
                                     tab_active: active,
                                     shell_cwd: shell_cwd.clone(),
+                                    t: start.elapsed().as_secs_f64(),
                                     window: (w, h),
                                 };
                                 for panel in widgets::Panel::all() {
@@ -1000,7 +1003,7 @@ fn main() {
                         // 5. Play whatever this frame reported. The theme
                         // decides which file each event maps to; an event
                         // it says nothing about is silently skipped.
-                        ng_base::sound::drain(&mut sfx);
+                        ng::sound::drain(&mut sfx);
                         if let Some(a) = audio.as_mut() {
                             for e in sfx.iter() {
                                 a.play(*e);
@@ -1032,7 +1035,7 @@ fn main() {
                 // otherwise cut the sound off as it goes.
                 Event::LoopExiting => {
                     if let Some(a) = audio.as_mut() {
-                        a.play_blocking(ng_base::sound::Event::Shutdown, 1400);
+                        a.play_blocking(ng::sound::Event::Shutdown, 1400);
                     }
                 }
                 _ => {}
@@ -1114,7 +1117,7 @@ fn editor_save(
         )
     };
     if let Err(e) = result {
-        ng_base::sound::emit(ng_base::sound::Event::Error);
+        ng::sound::emit(ng::sound::Event::Error);
         popup.show(format!("Cannot save layout '{name}': {e}"));
         return;
     }
@@ -1129,10 +1132,10 @@ fn editor_save(
     *layout_spec = new_cfg.layout;
     *active_ov = layout_spec.pick(key).cloned();
     if let Some(wmsg) = warn {
-        ng_base::sound::emit(ng_base::sound::Event::Alert);
+        ng::sound::emit(ng::sound::Event::Alert);
         popup.show(wmsg);
     } else {
-        ng_base::sound::emit(ng_base::sound::Event::Save);
+        ng::sound::emit(ng::sound::Event::Save);
     }
     editor.stop();
 }

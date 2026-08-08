@@ -407,7 +407,7 @@ impl Editor {
             if Self::x_rect(&r).contains(x, y) {
                 self.rects[i] = OFF_SPEC;
                 self.drag = None;
-                ng_base::sound::emit(ng_base::sound::Event::Drop);
+                ng::sound::emit(ng::sound::Event::Drop);
                 return EditorHit::Handled;
             }
             if l || rr || t || b {
@@ -415,7 +415,7 @@ impl Editor {
             } else {
                 self.drag = Some((i, Mode::Move { dx: x - r.x, dy: y - r.y }));
             }
-            ng_base::sound::emit(ng_base::sound::Event::Grab);
+            ng::sound::emit(ng::sound::Event::Grab);
         }
         EditorHit::Handled
     }
@@ -507,10 +507,10 @@ impl Editor {
         if self.drag.is_some() {
             // Snapping makes the release land on the grid, so it gets
             // the sharper confirmation of the two.
-            ng_base::sound::emit(if self.snap {
-                ng_base::sound::Event::Snap
+            ng::sound::emit(if self.snap {
+                ng::sound::Event::Snap
             } else {
-                ng_base::sound::Event::Drop
+                ng::sound::Event::Drop
             });
         }
         self.drag = None;
@@ -539,11 +539,11 @@ impl Editor {
 
     /// Opaque parallelogram button (ng_object).
     fn draw_button(ctx: &mut Ctx, br: &Rect, label: &str, hover: bool, flash: bool) {
-        ng_object::button::draw(
+        ng::object::button::draw(
             ctx,
             *br,
             label,
-            ng_object::button::ButtonState { hover, flash, selected: false },
+            ng::object::button::ButtonState { hover, flash, selected: false },
         );
     }
 
@@ -757,8 +757,8 @@ impl Editor {
         // ADD WIDGET list window (opaque).
         if self.add_open {
             let (win, items) = self.add_list_rects(w, h);
-            ng_object::window::backdrop(ctx, 0.4);
-            ng_object::window::frame(ctx, win);
+            ng::object::window::backdrop(ctx, 0.4);
+            ng::object::window::frame(ctx, win);
             let tpx = ctx.font_px(0.95);
             ctx.dl.text_center(
                 ctx.fonts,
@@ -841,12 +841,12 @@ impl Editor {
 
         // SAVE AS name prompt.
         if let Some(name) = self.naming.clone() {
-            ng_object::window::backdrop(ctx, 0.55);
+            ng::object::window::backdrop(ctx, 0.55);
             let bw = (w * 0.4).max(320.0);
             let bh = (h * 0.16).max(110.0);
             let bx = (w - bw) / 2.0;
             let by = (h - bh) / 2.0;
-            ng_object::window::frame(ctx, Rect::new(bx, by, bw, bh));
+            ng::object::window::frame(ctx, Rect::new(bx, by, bw, bh));
             let tpx = ctx.font_px(1.0);
             ctx.dl.text_center(
                 ctx.fonts,

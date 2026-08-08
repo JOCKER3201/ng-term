@@ -14,7 +14,7 @@ pub mod settings;
 pub use ng_builtins::{control, shell};
 
 // The widget contract the application drives every widget through.
-pub use ng_widgets::{Action, Host, Widget};
+pub use ng::{Action, Host, Widget};
 
 // Geometry, the panel/layout model and text fitting come from the base.
-pub use ng_base::base::*;
+pub use ng::base::*;

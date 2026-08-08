@@ -62,20 +62,29 @@ install:
 		done; \
 		echo "sound theme $$name: $$n installed, $$kept kept"; \
 	done; true
-	@# Widget descriptions from ./assets/widgets — one directory per
-	@# widget, scanned at startup to build the widget registry. Same
-	@# missing-file-only rule as the sounds.
+	@# Widgets from ./assets/widgets — one directory per widget, scanned
+	@# at startup to build the registry.
+	@#
+	@# Scripts and assets are the user's: installed only when missing, so
+	@# an edited widget survives an upgrade. Compiled widgets (*.so) are
+	@# the exact opposite and are ALWAYS overwritten: they are built
+	@# against this version's interface, and leaving an old one behind
+	@# would have the program load a library whose structures no longer
+	@# match — a crash rather than a message.
 	@for d in assets/widgets/*/; do \
 		[ -d "$$d" ] || continue; \
 		name=$$(basename "$$d"); \
 		mkdir -p "$(WIDGETDIR)/$$name"; \
 		for f in "$$d"*; do \
 			[ -f "$$f" ] || continue; \
-			dest="$(WIDGETDIR)/$$name/$$(basename "$$f")"; \
-			[ -e "$$dest" ] && continue; \
-			install -m644 "$$f" "$$dest"; \
+			base=$$(basename "$$f"); \
+			dest="$(WIDGETDIR)/$$name/$$base"; \
+			case "$$base" in \
+				*.so) install -m644 "$$f" "$$dest";; \
+				*) [ -e "$$dest" ] || install -m644 "$$f" "$$dest";; \
+			esac; \
 		done; \
-	done; echo "installed widget descriptions"
+	done; echo "installed widgets"
 	@# Icons (hicolor) + .desktop file with the binary path substituted.
 	@for s in $(ICON_SIZES); do \
 		install -Dm644 "assets/ng-term-$$s.png" \

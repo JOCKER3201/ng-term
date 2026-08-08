@@ -724,33 +724,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "lib-ng-base"
+name = "lib-ng"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-base#e521a56b06759544881c5b8879da7bb020b652fd"
 dependencies = [
+ "chrono",
  "fontdue",
+ "rhai",
  "serde_json",
  "taffy",
  "unicode-width",
  "vte",
-]
-
-[[package]]
-name = "lib-ng-object"
-version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-object#734229fac74e5bedda72cc2d93655ed5757a1438"
-dependencies = [
- "lib-ng-base",
-]
-
-[[package]]
-name = "lib-ng-widgets"
-version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-widgets#bd0941a3fe0e00b7c52d88957ea8a438497d93ef"
-dependencies = [
- "lib-ng-base",
- "lib-ng-object",
- "rhai",
 ]
 
 [[package]]
@@ -880,9 +863,7 @@ dependencies = [
  "ash",
  "ash-window",
  "chrono",
- "lib-ng-base",
- "lib-ng-object",
- "lib-ng-widgets",
+ "lib-ng",
  "libc",
  "naga",
  "raw-window-handle",
@@ -1824,12 +1805,9 @@ dependencies = [
 [[package]]
 name = "widgets"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/widgets#2b4833468e0776ec04895b241df24171586fb184"
 dependencies = [
  "chrono",
- "lib-ng-base",
- "lib-ng-object",
- "lib-ng-widgets",
+ "lib-ng",
  "unicode-width",
 ]
 

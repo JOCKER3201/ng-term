@@ -149,7 +149,7 @@ pub fn load() -> (Config, Option<String>) {
     init_tree(&config_dir());
     // The registry must exist before anything parses a layout: panels
     // are resolved by name against it.
-    ng_base::base::set_registry(load_widget_registry());
+    ng::base::set_registry(load_widget_registry());
     resolve()
 }
 
@@ -600,7 +600,7 @@ pub fn load_widget_registry() -> Vec<WidgetDef> {
             "ng-term: no widgets found in {} \u{2014} using the built-in set",
             widgets_dir().display()
         );
-        return ng_base::base::builtin_widgets();
+        return ng::base::builtin_widgets();
     }
     out
 }
@@ -608,21 +608,21 @@ pub fn load_widget_registry() -> Vec<WidgetDef> {
 /// The script of a widget, if its directory holds one. A widget is a
 /// directory with `<name>.rhai` in it, alongside whatever assets the
 /// widget needs — that file IS the widget.
-pub fn widget_script(name: &str) -> Option<ng_widgets::script::Script> {
+pub fn widget_script(name: &str) -> Option<ng::script::Script> {
     let name = safe_component(name)?;
     let path = widgets_dir().join(&name).join(format!("{name}.rhai"));
     path.is_file()
-        .then(|| ng_widgets::script::Script::load(&path))
+        .then(|| ng::script::Script::load(&path))
         .flatten()
 }
 
 /// The block description of a widget, if its file carries one. A file
 /// with blocks describes how the widget draws; one without leaves that
 /// to the compiled renderer registered under the same name.
-pub fn widget_desc(name: &str) -> Option<ng_widgets::desc::Desc> {
+pub fn widget_desc(name: &str) -> Option<ng::desc::Desc> {
     let name = safe_component(name)?;
     let text = std::fs::read_to_string(widgets_dir().join(name).join("widget")).ok()?;
-    let desc = ng_widgets::desc::Desc::parse(&text);
+    let desc = ng::desc::Desc::parse(&text);
     (!desc.is_empty()).then_some(desc)
 }
 
@@ -683,7 +683,7 @@ fn scan_widget_dir(dir: &Path) -> Vec<WidgetDef> {
 /// on the same terms as the styles and sounds: presence by name only, so
 /// an edited file stays the user's and a deleted one comes back.
 fn restore_builtin_widgets(dir: &Path) {
-    for def in ng_base::base::builtin_widgets() {
+    for def in ng::base::builtin_widgets() {
         let wd = dir.join(&def.name);
         if std::fs::create_dir_all(&wd).is_err() {
             continue;
@@ -1937,32 +1937,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The built-in widget list exists twice: as the fallback in code
-    /// and as the description files that are installed and scanned. They
-    /// must not drift apart, or the fallback would describe a different
-    /// program than the files do.
+    /// Every built-in widget must have a directory to be found in.
+    /// Sizes are deliberately NOT compared: they belong to the layout,
+    /// not to the widget, so a widget directory no longer carries them.
     #[test]
-    fn builtin_widgets_match_their_description_files() {
+    fn every_builtin_widget_has_a_directory() {
         let dir = Path::new("assets/widgets");
         let files = scan_widget_dir(dir);
-        assert!(!files.is_empty(), "assets/widgets must ship descriptions");
-        let code = ng_base::base::builtin_widgets();
-        // Code must not claim a widget the files do not describe; the
-        // reverse is fine and is the point of the feature — a widget can
-        // ship as a description with no compiled renderer behind it.
-        assert!(
-            files.len() >= code.len(),
-            "every built-in needs a description file"
-        );
-        for c in &code {
-            let f = files
-                .iter()
-                .find(|f| f.name == c.name)
-                .unwrap_or_else(|| panic!("no description file for '{}'", c.name));
-            assert_eq!(f.label, c.label, "label of '{}'", c.name);
-            assert_eq!(f.ref_h_vh, c.ref_h_vh, "RefHeight of '{}'", c.name);
-            assert_eq!(f.min_h_vh, c.min_h_vh, "MinHeight of '{}'", c.name);
-            assert_eq!(f.builtin, c.builtin, "Builtin of '{}'", c.name);
+        assert!(!files.is_empty(), "assets/widgets must ship widgets");
+        for c in ng::base::builtin_widgets() {
+            assert!(
+                files.iter().any(|f| f.name == c.name),
+                "no widget directory for '{}'",
+                c.name
+            );
         }
     }
 

@@ -266,7 +266,7 @@ impl Settings {
     pub fn show(&mut self) {
         self.open = true;
         self.view = View::Menu;
-        ng_base::sound::emit(ng_base::sound::Event::PanelOpen);
+        ng::sound::emit(ng::sound::Event::PanelOpen);
     }
 
     /// Opens the settings window straight at the GRID view — used by the
@@ -279,12 +279,12 @@ impl Settings {
         self.grid_rows = rows;
         self.grid_pad = pad;
         self.view = View::Grid;
-        ng_base::sound::emit(ng_base::sound::Event::PanelOpen);
+        ng::sound::emit(ng::sound::Event::PanelOpen);
     }
 
     pub fn close(&mut self) {
         self.open = false;
-        ng_base::sound::emit(ng_base::sound::Event::PanelClose);
+        ng::sound::emit(ng::sound::Event::PanelClose);
     }
 
     /// Whether the cursor is over an interactive element of the window.
@@ -318,7 +318,7 @@ impl Settings {
         self.flash = Some((act, Instant::now()));
         // Every button clicks; the actions below that mean more than a
         // plain press replace it with their own sound.
-        use ng_base::sound::{emit, Event as Sfx};
+        use ng::sound::{emit, Event as Sfx};
         match act {
             Act::Close | Act::Back => {}
             Act::ToggleSnap | Act::ToggleTyping | Act::ToggleAmbient => {}
@@ -556,9 +556,9 @@ impl Settings {
         let base = ctx.theme.base;
 
         // Dim the background and draw the window frame (ng_object).
-        ng_object::window::backdrop(ctx, 0.55);
+        ng::object::window::backdrop(ctx, 0.55);
         let m = modal_rect(ctx.w, ctx.h);
-        ng_object::window::frame(ctx, m);
+        ng::object::window::frame(ctx, m);
 
         let pad = ctx.vh(1.4);
         let title_px = ctx.font_px(1.02);
@@ -689,7 +689,7 @@ impl Settings {
         // SNAP TO GRID checkbox (ng_object; the whole row toggles).
         let row = Rect::new(content.x, y, content.w, btn_h);
         let hover = row.contains(ctx.mouse.0, ctx.mouse.1);
-        ng_object::checkbox::draw(ctx, row, "SNAP TO GRID", self.grid_snap, hover);
+        ng::object::checkbox::draw(ctx, row, "SNAP TO GRID", self.grid_snap, hover);
         self.hits.push((row, Act::ToggleSnap));
         y += btn_h + gap;
 
@@ -743,7 +743,7 @@ impl Settings {
         let track = Rect::new(content.x + label_w, y, content.w - label_w - value_w, btn_h);
         self.pad_rect = track;
         let t = (self.grid_pad as f32 / 40.0).clamp(0.0, 1.0);
-        ng_object::slider::track(ctx, track, t);
+        ng::object::slider::track(ctx, track, t);
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
@@ -804,7 +804,7 @@ impl Settings {
         let value_w = ctx.fonts.measure(FONT_UI, px, "100 %", px * 0.05) + px;
         let track = Rect::new(content.x + label_w, y, content.w - label_w - value_w, btn_h);
         self.volume_rect = track;
-        ng_object::slider::track(ctx, track, (self.sound_volume as f32 / 100.0).clamp(0.0, 1.0));
+        ng::object::slider::track(ctx, track, (self.sound_volume as f32 / 100.0).clamp(0.0, 1.0));
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
@@ -824,7 +824,7 @@ impl Settings {
         ] {
             let row = Rect::new(content.x, y, content.w, btn_h);
             let hover = row.contains(ctx.mouse.0, ctx.mouse.1);
-            ng_object::checkbox::draw(ctx, row, label, on, hover);
+            ng::object::checkbox::draw(ctx, row, label, on, hover);
             self.hits.push((row, act));
             y += btn_h + gap;
         }
@@ -953,7 +953,7 @@ impl Settings {
         self.slider_rect[si] = track;
         let (rmin, rmax) = Self::size_range(sect);
         let t = ((self.cur_size[si] as f32 - rmin) / (rmax - rmin)).clamp(0.0, 1.0);
-        ng_object::slider::track(ctx, track, t);
+        ng::object::slider::track(ctx, track, t);
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
@@ -1001,7 +1001,7 @@ impl Settings {
             .map(|s| (s.elapsed().as_secs_f32() / 0.15).clamp(0.0, 1.0))
             .unwrap_or(1.0);
         let p = 1.0 - (1.0 - t) * (1.0 - t); // ease-out
-        for (i, (r, _full)) in ng_object::dropdown::accordion(ctx, anchor, item_h, names, p)
+        for (i, (r, _full)) in ng::object::dropdown::accordion(ctx, anchor, item_h, names, p)
             .into_iter()
             .enumerate()
         {
@@ -1101,11 +1101,11 @@ impl Settings {
             }
             _ => false,
         };
-        let st = ng_object::button::ButtonState { hover, flash, selected: is_current };
+        let st = ng::object::button::ButtonState { hover, flash, selected: is_current };
         if act == Act::Back {
             // The base button (ng_object) plus a left arrow and a label
             // shifted to make room for it.
-            ng_object::button::draw(ctx, r, "", st);
+            ng::object::button::draw(ctx, r, "", st);
             let px = ctx.font_px(1.0);
             let color = if hover || flash || is_current { base } else { base.alpha(0.7) };
             let skew = r.h * 0.7;
@@ -1125,7 +1125,7 @@ impl Settings {
                 px * 0.1,
             );
         } else {
-            ng_object::button::draw(ctx, r, label, st);
+            ng::object::button::draw(ctx, r, label, st);
         }
         self.hits.push((r, act));
     }

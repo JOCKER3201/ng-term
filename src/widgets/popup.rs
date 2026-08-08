@@ -55,7 +55,7 @@ impl Popup {
         let bx = (ctx.w - bw) / 2.0;
         let by = ctx.h * 0.10;
 
-        ng_object::window::frame(ctx, super::Rect::new(bx, by, bw, bh));
+        ng::object::window::frame(ctx, super::Rect::new(bx, by, bw, bh));
         ctx.dl.text_center(
             ctx.fonts,
             FONT_UI,

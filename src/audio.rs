@@ -1,7 +1,7 @@
 //! Audio output — the platform half of the sound system.
 //!
 //! Everything about WHAT to play (events, themes, WAV decoding, mixing)
-//! is platform-independent and lives in ng_base::sound. This file is
+//! is platform-independent and lives in ng::sound. This file is
 //! only the device.
 //!
 //! ALSA is reached through dlopen rather than by linking to it, so
@@ -14,7 +14,7 @@
 //! card — every one of those leaves the program fully usable and merely
 //! silent, so nothing here may fail loudly.
 
-use ng_base::sound::{Clip, Event, Mixer, SoundTheme};
+use ng::sound::{Clip, Event, Mixer, SoundTheme};
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

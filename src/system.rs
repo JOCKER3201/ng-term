@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 // The telemetry data model (Snapshot, formatting) is shared by every
 // platform and lives in lib-ng-base; this file keeps the Linux
 // collectors (/sys, /proc, sysinfo) that fill it.
-pub use ng_base::telemetry::{ProcEntry, Snapshot, CPU_HISTORY};
+pub use ng::telemetry::{ProcEntry, Snapshot, CPU_HISTORY};
 
 fn read_sys(path: &str) -> Option<String> {
     std::fs::read_to_string(path)
