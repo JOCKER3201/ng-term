@@ -3,16 +3,17 @@
 //! and files, on-screen keyboard and control panel at the bottom.
 
 mod config;
-mod draw;
-mod flex;
-mod font;
 mod gfx;
 mod pty;
 mod shaders;
 mod system;
 mod term;
-mod theme;
 mod widgets;
+
+// The widget framework (drawing, fonts, themes, layout engine) lives in
+// the external lib-ng-widgets crate; re-export its modules under crate::
+// so the rest of the code links against them like before.
+pub use ng_widgets::{draw, flex, font, theme};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
