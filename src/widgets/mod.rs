@@ -11,10 +11,10 @@ pub mod editor;
 pub mod popup;
 pub mod settings;
 
-pub use ng_builtins::{
-    clock, control, cpu, filesystem, hardware, keyboard, memory, network,
-    processes, shell, sysinfo,
-};
+pub use ng_builtins::{control, shell};
+
+// The widget contract the application drives every widget through.
+pub use ng_widgets::{Action, Host, Widget};
 
 // Geometry, the panel/layout model and text fitting come from the base.
 pub use ng_base::base::*;

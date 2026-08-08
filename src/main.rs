@@ -204,10 +204,15 @@ fn main() {
     }
     let mut active: usize = 0;
 
-    // Panel state.
-    let mut kb = widgets::keyboard::Keyboard::new();
-    let mut fsp = widgets::filesystem::Filesystem::new(home.clone());
-    let mut control = widgets::control::Control::new();
+    // One instance per registered widget, built by name from the set the
+    // widgets crate provides. A described widget the set has no renderer
+    // for stays None: it takes part in the layout and draws nothing.
+    let widget_set = ng_builtins::default_set();
+    let mut widget_inst: Vec<Option<Box<dyn widgets::Widget>>> = widgets::Panel::all()
+        .into_iter()
+        .map(|p| widget_set.make(p.name()))
+        .collect();
+
     let mut settings = widgets::settings::Settings::new();
     let mut editor = widgets::editor::Editor::new();
     let mut popup = widgets::popup::Popup::new();
@@ -224,7 +229,6 @@ fn main() {
     };
     let p_shell = pnl("shell");
     let p_keyboard = pnl("keyboard");
-    let p_filesystem = pnl("filesystem");
     let p_control = pnl("control");
 
     let mut dl = draw::DrawList::new();
@@ -315,12 +319,33 @@ fn main() {
                             ui_padding,
                         )
                         .padded(ui_padding);
-                        if layout.p(p_shell).contains(mouse.0, mouse.1) {
-                            if let Some(s) = sessions[active].as_mut() {
-                                s.term.scroll_view((dy * 3.0) as i32);
+                        let hit = widgets::Panel::all()
+                            .into_iter()
+                            .find(|p| layout.p(*p).contains(mouse.0, mouse.1));
+                        if let Some(panel) = hit {
+                            let r = layout.p(panel);
+                            let occupied: Vec<bool> =
+                                (0..TAB_COUNT).map(|i| sessions[i].is_some()).collect();
+                            let action = {
+                                let host = widgets::Host {
+                                    snap: &sys.lock().unwrap().clone(),
+                                    term: sessions[active].as_ref().map(|s| &s.term),
+                                    tabs: &occupied,
+                                    tab_active: active,
+                                    shell_cwd: None,
+                                    window: (size.width as f32, size.height as f32),
+                                };
+                                widget_inst
+                                    .get_mut(panel.idx())
+                                    .and_then(|w| w.as_mut())
+                                    .map(|w| w.wheel(dy, r, &host))
+                                    .unwrap_or(widgets::Action::None)
+                            };
+                            if let widgets::Action::ScrollTerminal(n) = action {
+                                if let Some(s) = sessions[active].as_mut() {
+                                    s.term.scroll_view(n);
+                                }
                             }
-                        } else if layout.p(p_filesystem).contains(mouse.0, mouse.1) {
-                            fsp.wheel(dy * 40.0);
                         }
                     }
                     WindowEvent::MouseInput {
@@ -598,70 +623,102 @@ fn main() {
                             }
                             return;
                         }
-                        // Terminal tabs: switching / opening a new session.
-                        let tab_hit = widgets::shell::tab_rects(layout.p(p_shell), size.height as f32)
-                            .iter()
-                            .position(|tr| tr.contains(mouse.0, mouse.1));
-                        if let Some(i) = tab_hit {
+                        // One route for every widget: find the one under
+                        // the cursor, hand it the click, act on what it
+                        // asks for. The application does not know which
+                        // widget it is talking to.
+                        let hit = widgets::Panel::all()
+                            .into_iter()
+                            .find(|p| layout.p(*p).contains(mouse.0, mouse.1));
+                        let Some(panel) = hit else { return };
+                        let r = layout.p(panel);
+                        let occupied: Vec<bool> =
+                            (0..TAB_COUNT).map(|i| sessions[i].is_some()).collect();
+                        let action = {
+                            let snap = sys.lock().unwrap().clone();
+                            let host = widgets::Host {
+                                snap: &snap,
+                                term: sessions[active].as_ref().map(|s| &s.term),
+                                tabs: &occupied,
+                                tab_active: active,
+                                shell_cwd: sessions[active]
+                                    .as_ref()
+                                    .and_then(|s| s.pty.child_cwd()),
+                                window: (size.width as f32, size.height as f32),
+                            };
+                            widget_inst
+                                .get_mut(panel.idx())
+                                .and_then(|w| w.as_mut())
+                                .map(|w| w.click(mouse.0, mouse.1, r, &host))
+                                .unwrap_or(widgets::Action::None)
+                        };
+                        // The on-screen keyboard sounds its own keys, so a
+                        // click on it must not also click.
+                        if !matches!(
+                            action,
+                            widgets::Action::None | widgets::Action::Bytes(_)
+                        ) {
                             ng_base::sound::emit(ng_base::sound::Event::Click);
-                            if sessions[i].is_some() {
-                                active = i;
-                            } else {
-                                // A new tab starts in the file panel's directory.
-                                match Session::spawn(grid.0, grid.1, &fsp.cwd) {
-                                    Ok(s) => {
-                                        sessions[i] = Some(s);
-                                        active = i;
-                                    }
-                                    Err(e) => eprintln!("ng-term: cannot open PTY: {e}"),
-                                }
-                            }
-                        } else if layout.p(p_keyboard).contains(mouse.0, mouse.1) {
-                            if let Some(bytes) = kb.click(mouse.0, mouse.1) {
+                        }
+                        match action {
+                            widgets::Action::Bytes(bytes) => {
                                 if let Some(s) = sessions[active].as_mut() {
                                     s.pty.write(&bytes);
                                     s.term.view_offset = 0;
                                 }
                             }
-                        } else if layout.p(p_filesystem).contains(mouse.0, mouse.1) {
-                            let hit = fsp.click(mouse.0, mouse.1);
-                            if hit.is_some() {
-                                ng_base::sound::emit(ng_base::sound::Event::Click);
+                            widgets::Action::OpenDir(dir) => {
+                                // Entering a directory = cd in the active
+                                // tab (a leading space skips bash history).
+                                if let Some(s) = sessions[active].as_mut() {
+                                    let quoted =
+                                        dir.display().to_string().replace('\'', "'\\''");
+                                    s.pty.write(format!(" cd '{quoted}'\r").as_bytes());
+                                    s.term.view_offset = 0;
+                                }
                             }
-                            match hit {
-                                Some(widgets::filesystem::FsEvent::OpenDir(dir)) => {
-                                    // Entering a directory = cd in the active tab
-                                    // (leading space skips bash history).
-                                    if let Some(s) = sessions[active].as_mut() {
-                                        let quoted =
-                                            dir.display().to_string().replace('\'', "'\\''");
-                                        s.pty.write(format!(" cd '{quoted}'\r").as_bytes());
-                                        s.term.view_offset = 0;
+                            widgets::Action::OpenFile(file) => {
+                                // Application associated with the extension.
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(&file)
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .spawn();
+                            }
+                            widgets::Action::SelectTab(i) => {
+                                if sessions[i].is_some() {
+                                    active = i;
+                                } else {
+                                    // A new tab starts where the active
+                                    // shell is, which is what the file
+                                    // panel is showing.
+                                    let start = sessions[active]
+                                        .as_ref()
+                                        .and_then(|s| s.pty.child_cwd())
+                                        .unwrap_or_else(|| home.clone());
+                                    match Session::spawn(grid.0, grid.1, &start) {
+                                        Ok(s) => {
+                                            sessions[i] = Some(s);
+                                            active = i;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("ng-term: cannot open PTY: {e}")
+                                        }
                                     }
                                 }
-                                Some(widgets::filesystem::FsEvent::OpenFile(file)) => {
-                                    // Application associated with the extension in the system.
-                                    let _ = std::process::Command::new("xdg-open")
-                                        .arg(&file)
-                                        .stdin(std::process::Stdio::null())
-                                        .stdout(std::process::Stdio::null())
-                                        .stderr(std::process::Stdio::null())
-                                        .spawn();
-                                }
-                                None => {}
                             }
-                        } else if let Some(btn) =
-                            control.click(mouse.0, mouse.1, layout.p(p_control), size.height as f32)
-                        {
-                            ng_base::sound::emit(ng_base::sound::Event::Click);
-                            match btn {
-                                widgets::control::BTN_EXIT => {
-                                    eprintln!("ng-term: closed from the control panel");
-                                    elwt.exit();
-                                }
-                                widgets::control::BTN_SETTINGS => settings.show(),
-                                _ => {}
+                            widgets::Action::Exit => {
+                                eprintln!("ng-term: closed from the control panel");
+                                elwt.exit();
                             }
+                            widgets::Action::OpenSettings => settings.show(),
+                            widgets::Action::ScrollTerminal(n) => {
+                                if let Some(s) = sessions[active].as_mut() {
+                                    s.term.scroll_view(n);
+                                }
+                            }
+                            widgets::Action::None => {}
                         }
                     }
                     WindowEvent::KeyboardInput { event: key_event, .. } => {
@@ -736,18 +793,19 @@ fn main() {
                             key_to_bytes(&key_event.logical_key, mods, app_cursor)
                         {
                             // Highlight the key on the on-screen keyboard.
-                            match &key_event.logical_key {
-                                Key::Character(s) => {
-                                    if let Some(c) = s.chars().next() {
-                                        kb.flash_char(c);
-                                    }
-                                }
-                                Key::Named(NamedKey::Enter) => kb.flash_label("ENTER"),
-                                Key::Named(NamedKey::Backspace) => kb.flash_label("BACK"),
-                                Key::Named(NamedKey::Space) => kb.flash_label("SPACE"),
-                                Key::Named(NamedKey::Tab) => kb.flash_label("TAB"),
-                                Key::Named(NamedKey::Escape) => kb.flash_label("ESC"),
-                                _ => {}
+                            let (ch, label) = match &key_event.logical_key {
+                                Key::Character(s) => (s.chars().next(), None),
+                                Key::Named(NamedKey::Enter) => (None, Some("ENTER")),
+                                Key::Named(NamedKey::Backspace) => (None, Some("BACK")),
+                                Key::Named(NamedKey::Space) => (None, Some("SPACE")),
+                                Key::Named(NamedKey::Tab) => (None, Some("TAB")),
+                                Key::Named(NamedKey::Escape) => (None, Some("ESC")),
+                                _ => (None, None),
+                            };
+                            if let Some(wg) =
+                                widget_inst.get_mut(p_keyboard.idx()).and_then(|w| w.as_mut())
+                            {
+                                wg.key_feedback(ch, label);
                             }
                             // Typing: Enter and Backspace have their own
                             // sounds, every other key shares the rotating
@@ -799,9 +857,11 @@ fn main() {
                             }
                         }
 
-                        // 2. The file panel follows the active shell.
-                        let cwd = sessions[active].as_ref().and_then(|s| s.pty.child_cwd());
-                        fsp.follow(cwd);
+                        // 2. Session state the widgets are given this frame.
+                        let occupied: Vec<bool> =
+                            (0..TAB_COUNT).map(|i| sessions[i].is_some()).collect();
+                        let shell_cwd =
+                            sessions[active].as_ref().and_then(|s| s.pty.child_cwd());
 
                         // 3. Build the draw list.
                         let size = window.inner_size();
@@ -844,62 +904,51 @@ fn main() {
                                 )
                             }
                             .padded(ui_padding);
-                            // Every registered widget that is not one of
-                            // the interactive built-ins, drawn straight
-                            // from the registry — the set comes from the
-                            // widgets directory, not from this list.
-                            for panel in widgets::Panel::all() {
-                                if panel.builtin().is_some() {
-                                    continue;
-                                }
-                                let r = layout.p(panel);
-                                ctx.panel_scale = ctx.panel_font_scale(&r, panel);
-                                draw_described(&mut ctx, panel, r, &snap);
-                                ctx.panel_scale = 1.0;
-                            }
-
-                            // The interactive widgets each need their own
-                            // state, so they keep individual call sites.
-                            let occupied: [bool; TAB_COUNT] =
-                                std::array::from_fn(|i| sessions[i].is_some());
-                            let active_term = &sessions[active].as_ref().unwrap().term;
-                            let (cols, rows) = widgets::shell::draw(
-                                &mut ctx,
-                                layout.p(p_shell),
-                                active_term,
-                                &occupied,
-                                active,
-                            );
-                            fsp.draw(&mut ctx, layout.p(p_filesystem));
-                            kb.draw(&mut ctx, layout.p(p_keyboard));
-                            control.draw(&mut ctx, layout.p(p_control));
-                            // Settings window drawn on top.
-                            // Grid overlay + editor controls on top of the
-                            // live panels. The closure draws live widget
-                            // miniatures inside the ADD WIDGET window.
-                            if editor.active {
-                                editor.draw(&mut ctx, |ctx, panel, r| {
-                                    let p = widgets::Panel(panel as u16);
-                                    ctx.panel_scale = ctx.panel_font_scale(&r, p);
-                                    match p.builtin() {
-                                        Some("shell") => {
-                                            let _ = widgets::shell::draw(
-                                                ctx,
-                                                r,
-                                                active_term,
-                                                &occupied,
-                                                active,
-                                            );
-                                        }
-                                        Some("filesystem") => fsp.draw(ctx, r),
-                                        Some("keyboard") => kb.draw(ctx, r),
-                                        Some("control") => control.draw(ctx, r),
-                                        Some(_) => {}
-                                        None => draw_described(ctx, p, r, &snap),
+                            // Every widget drawn through the one contract:
+                            // the application no longer knows which is
+                            // which, only what the registry lists.
+                            {
+                                let host = widgets::Host {
+                                    snap: &snap,
+                                    term: sessions[active].as_ref().map(|s| &s.term),
+                                    tabs: &occupied,
+                                    tab_active: active,
+                                    shell_cwd: shell_cwd.clone(),
+                                    window: (w, h),
+                                };
+                                for panel in widgets::Panel::all() {
+                                    let r = layout.p(panel);
+                                    ctx.panel_scale = ctx.panel_font_scale(&r, panel);
+                                    if let Some(wg) =
+                                        widget_inst.get_mut(panel.idx()).and_then(|w| w.as_mut())
+                                    {
+                                        wg.draw(&mut ctx, r, &host);
                                     }
                                     ctx.panel_scale = 1.0;
-                                });
+                                }
+                                // Grid overlay + editor controls on top of
+                                // the live panels; the closure draws live
+                                // miniatures in the ADD WIDGET window.
+                                if editor.active {
+                                    editor.draw(&mut ctx, |ctx, panel, r| {
+                                        let p = widgets::Panel(panel as u16);
+                                        ctx.panel_scale = ctx.panel_font_scale(&r, p);
+                                        if let Some(wg) =
+                                            widget_inst.get_mut(p.idx()).and_then(|w| w.as_mut())
+                                        {
+                                            wg.draw(ctx, r, &host);
+                                        }
+                                        ctx.panel_scale = 1.0;
+                                    });
+                                }
                             }
+                            // The terminal reports the character grid it
+                            // settled on, so the PTY can be resized to it.
+                            let (cols, rows) = widget_inst
+                                .get(p_shell.idx())
+                                .and_then(|w| w.as_ref())
+                                .and_then(|w| w.grid())
+                                .unwrap_or(grid);
                             settings.draw(&mut ctx);
                             // With the settings window open over the editor
                             // its buttons share the window's plane.
@@ -974,29 +1023,6 @@ fn main() {
             }
         })
         .expect("event loop ended with an error");
-}
-
-/// Draws a widget that has no compiled renderer of its own. Until the
-/// description language can express them, the data widgets are still
-/// drawn by compiled code, selected by the NAME the registry gives them
-/// rather than by a fixed enum — so a renamed or removed widget changes
-/// nothing here, and an unknown name simply draws nothing.
-fn draw_described(
-    ctx: &mut widgets::Ctx,
-    panel: widgets::Panel,
-    r: widgets::Rect,
-    snap: &system::Snapshot,
-) {
-    match panel.name() {
-        "clock" => widgets::clock::draw(ctx, r, snap),
-        "sysinfo" => widgets::sysinfo::draw(ctx, r, snap),
-        "hardware" => widgets::hardware::draw(ctx, r, snap),
-        "cpu" => widgets::cpu::draw(ctx, r, snap),
-        "memory" => widgets::memory::draw(ctx, r, snap),
-        "processes" => widgets::processes::draw(ctx, r, snap),
-        "network" => widgets::network::draw(ctx, r, snap),
-        _ => {}
-    }
 }
 
 /// The current screen key: monitor resolution + diagonal in inches.

@@ -708,7 +708,7 @@ dependencies = [
 [[package]]
 name = "lib-ng-widgets"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/lib-ng-widgets#18c2ddbf3e3c8e6e8cf9d9a12a73e038c8057387"
+source = "git+https://github.com/JOCKER3201/lib-ng-widgets#fcd42adb4b69dcc8001bd09c8793ad35f4acebc4"
 dependencies = [
  "lib-ng-base",
  "lib-ng-object",
@@ -1684,7 +1684,7 @@ dependencies = [
 [[package]]
 name = "widgets"
 version = "0.1.0"
-source = "git+https://github.com/JOCKER3201/widgets#044939bfc48121e11f619d3ec51da3a70e9dba4d"
+source = "git+https://github.com/JOCKER3201/widgets#2b4833468e0776ec04895b241df24171586fb184"
 dependencies = [
  "chrono",
  "lib-ng-base",
