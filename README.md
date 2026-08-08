@@ -27,17 +27,27 @@ terminal view, which draws thousands of character cells per frame, and
 the file browser, which has to read directories. They are the escape
 hatch, not the default.
 
-> **A compiled plugin is native code and runs with your full account
-> privileges — in a program that sits next to your shell.** There is no
-> sandbox around it, and none is possible. Installing one is the same
-> act of trust as building a package from the AUR or adding a third-party
-> repository: judge the author, not the mechanism. Plugins shipped with
-> ng-term are overwritten on every install, so an outdated one cannot
-> linger; plugins you add yourself are left alone.
+> ### This warning is about `.so` plugins only
+>
+> **None of it applies to `.rhai` scripts.** A script cannot reach the
+> filesystem, the network or another process, because no function that
+> would let it exists in its world. Installing a script risks nothing
+> but a badly drawn panel.
+>
+> **A compiled plugin is the opposite: native code running with your
+> full account privileges, in a program that sits next to your shell.**
+> There is no sandbox around it, and none is possible. Installing one is
+> the same act of trust as building a package from the AUR or adding a
+> third-party repository — judge the author, not the mechanism.
 >
 > A plugin must also be rebuilt for each release, and separately for
-> each platform and processor architecture — a maintenance cost a script
-> does not have.
+> each platform and processor architecture; a script is written once and
+> works everywhere, on every version. Plugins shipped with ng-term are
+> overwritten on every install, so an outdated one cannot linger;
+> plugins you add yourself are left alone.
+>
+> Prefer a script. Reach for a plugin only when a script genuinely
+> cannot do the job.
 
 `NGTERM_SAFE=1` starts the program with every plugin skipped, which is
 the way back in when one of them prevents startup.
