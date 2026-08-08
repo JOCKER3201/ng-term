@@ -18,8 +18,9 @@ use std::time::Instant;
 
 /// Edge-grab margin in px (resize handles).
 const EDGE: f32 = 8.0;
-/// Minimum panel size in px when snapping is off.
-const MIN_SIZE: f32 = 40.0;
+/// Minimum CONTENT size of a panel in px — the outer rectangle can
+/// never shrink below the padding plus this much content.
+const MIN_CONTENT: f32 = 30.0;
 /// Hold time on an ADD WIDGET entry before placement starts.
 const HOLD_SECS: f32 = 5.0;
 
@@ -27,6 +28,8 @@ const HOLD_SECS: f32 = 5.0;
 pub enum EditorHit {
     /// Handled internally (drag started, widget list, empty space).
     Handled,
+    /// SETTINGS — show/hide the settings window over the editor.
+    Settings,
     /// SAVE — overwrite the currently selected layout.
     Save,
     /// SAVE AS — open the name prompt.
@@ -57,8 +60,14 @@ pub struct Editor {
     pub snap: bool,
     pub cols: u32,
     pub rows: u32,
+    /// Widget padding: the outer rect is always this much larger than
+    /// the inner content container on every side.
+    padding: f32,
     /// Edited panel rects in percent of the window, Panel order.
     rects: [PanelSpec; PANEL_COUNT],
+    /// The rects as they were when the editor opened — SAVE stores only
+    /// the panels that differ from this.
+    initial: [PanelSpec; PANEL_COUNT],
     drag: Option<(usize, Mode)>,
     /// SAVE AS name being typed; Some = the prompt is open.
     pub naming: Option<String>,
@@ -92,7 +101,9 @@ impl Editor {
             snap: false,
             cols: 12,
             rows: 8,
+            padding: 8.0,
             rects: [OFF_SPEC; PANEL_COUNT],
+            initial: [OFF_SPEC; PANEL_COUNT],
             drag: None,
             naming: None,
             add_open: false,
@@ -104,11 +115,21 @@ impl Editor {
 
     /// Enters edit mode with the CURRENT panel rectangles (WYSIWYG).
     /// With snapping enabled all panels are fitted to the grid at once.
-    pub fn start(&mut self, layout: &Layout, w: f32, h: f32, snap: bool, cols: u32, rows: u32) {
+    pub fn start(
+        &mut self,
+        layout: &Layout,
+        w: f32,
+        h: f32,
+        snap: bool,
+        cols: u32,
+        rows: u32,
+        padding: f32,
+    ) {
         self.active = true;
         self.snap = snap;
         self.cols = cols.max(2);
         self.rows = rows.max(2);
+        self.padding = padding.max(0.0);
         self.naming = None;
         self.drag = None;
         self.add_open = false;
@@ -118,6 +139,7 @@ impl Editor {
         if self.snap {
             self.snap_all(w, h);
         }
+        self.initial = self.rects;
     }
 
     pub fn stop(&mut self) {
@@ -164,13 +186,50 @@ impl Editor {
         LayoutSpec { panels: self.rects }
     }
 
-    fn save_buttons(w: f32, h: f32) -> [Rect; 4] {
+    /// Panels whose rectangles differ from the given reference spec
+    /// (with a small tolerance) — the "only the changes" save payload.
+    pub fn changes_vs(&self, reference: &LayoutSpec) -> Vec<(Panel, PanelSpec)> {
+        let mut out = Vec::new();
+        for panel in Panel::ALL {
+            let a = &self.rects[panel.idx()];
+            let b = reference.p(panel);
+            let both_hidden = a.x >= 100.0 && b.x >= 100.0;
+            let same = (a.x - b.x).abs() < 0.05
+                && (a.y - b.y).abs() < 0.05
+                && (a.w - b.w).abs() < 0.05
+                && (a.h - b.h).abs() < 0.05;
+            if !both_hidden && !same {
+                out.push((panel, *a));
+            }
+        }
+        out
+    }
+
+    /// Panels changed since the editor was opened.
+    pub fn changes_since_start(&self) -> Vec<(Panel, PanelSpec)> {
+        self.changes_vs(&LayoutSpec { panels: self.initial })
+    }
+
+    fn save_buttons(w: f32, h: f32) -> [Rect; 5] {
         let bw = (w * 0.10).max(110.0);
         let bh = (h * 0.045).max(30.0);
         let gap = bh * 0.35;
         let x = w - bw - w * 0.012;
-        let y1 = h - 4.0 * bh - 3.0 * gap - h * 0.02;
+        let y1 = h - 5.0 * bh - 4.0 * gap - h * 0.02;
         std::array::from_fn(|i| Rect::new(x, y1 + i as f32 * (bh + gap), bw, bh))
+    }
+
+    /// Applies grid preferences changed in the settings window while the
+    /// editor is running; enabling snap auto-fits all panels.
+    pub fn sync_prefs(&mut self, snap: bool, cols: u32, rows: u32, padding: f32, w: f32, h: f32) {
+        let was = self.snap;
+        self.cols = cols.max(2);
+        self.rows = rows.max(2);
+        self.padding = padding.max(0.0);
+        self.snap = snap;
+        if snap && !was {
+            self.snap_all(w, h);
+        }
     }
 
     /// Hidden panels offered by the ADD WIDGET window.
@@ -300,21 +359,26 @@ impl Editor {
         }
         let btns = Self::save_buttons(w, h);
         if btns[0].contains(x, y) {
-            // ADD WIDGET — toggle the list window (handled internally).
+            // SETTINGS — the window opens over the editor.
             self.flash = Some((0, Instant::now()));
+            return EditorHit::Settings;
+        }
+        if btns[1].contains(x, y) {
+            // ADD WIDGET — toggle the list window (handled internally).
+            self.flash = Some((1, Instant::now()));
             self.add_open = true;
             return EditorHit::Handled;
         }
-        if btns[1].contains(x, y) {
-            self.flash = Some((1, Instant::now()));
-            return EditorHit::Save;
-        }
         if btns[2].contains(x, y) {
             self.flash = Some((2, Instant::now()));
-            return EditorHit::SaveAs;
+            return EditorHit::Save;
         }
         if btns[3].contains(x, y) {
             self.flash = Some((3, Instant::now()));
+            return EditorHit::SaveAs;
+        }
+        if btns[4].contains(x, y) {
+            self.flash = Some((4, Instant::now()));
             return EditorHit::Cancel;
         }
         if let Some((i, l, rr, t, b)) = self.panel_at(x, y, w, h) {
@@ -378,8 +442,9 @@ impl Editor {
                 let (l, rr, t, b) = (*l, *rr, *t, *b);
                 let (mut x0, mut x1) = (r.x, r.right());
                 let (mut y0, mut y1) = (r.y, r.bottom());
-                let min_w = if self.snap { cw.max(10.0) } else { MIN_SIZE };
-                let min_h = if self.snap { ch.max(10.0) } else { MIN_SIZE };
+                let m = self.min_outer();
+                let min_w = if self.snap { cw.max(m) } else { m };
+                let min_h = if self.snap { ch.max(m) } else { m };
                 if l {
                     x0 = x.clamp(0.0, x1 - min_w);
                     if self.snap {
@@ -444,12 +509,19 @@ impl Editor {
         );
     }
 
+    /// The smallest allowed OUTER panel size: padding on both sides
+    /// plus the minimum content.
+    fn min_outer(&self) -> f32 {
+        2.0 * self.padding + MIN_CONTENT
+    }
+
     /// Placement size of a freshly added widget.
     fn spawn_size(&self, w: f32, h: f32) -> (f32, f32) {
+        let m = self.min_outer();
         if self.snap {
-            (w / self.cols as f32 * 3.0, h / self.rows as f32 * 2.0)
+            ((w / self.cols as f32 * 3.0).max(m), (h / self.rows as f32 * 2.0).max(m))
         } else {
-            (w * 0.20, h * 0.25)
+            ((w * 0.20).max(m), (h * 0.25).max(m))
         }
     }
 
@@ -612,7 +684,7 @@ impl Editor {
         // ADD WIDGET / SAVE / SAVE AS / CANCEL in the bottom-right corner.
         let now = Instant::now();
         let btns = Self::save_buttons(w, h);
-        let labels = ["ADD WIDGET", "SAVE", "SAVE AS", "CANCEL"];
+        let labels = ["SETTINGS", "ADD WIDGET", "SAVE", "SAVE AS", "CANCEL"];
         for (i, br) in btns.iter().enumerate() {
             let hover = !self.add_open && self.naming.is_none() && br.contains(mx, my);
             let flash = self

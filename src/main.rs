@@ -153,6 +153,10 @@ fn main() {
     // Minimum window size in landscape orientation.
     window.set_min_inner_size(Some(winit::dpi::PhysicalSize::new(1280u32, 720u32)));
 
+    // Per-screen layout override matching the current monitor
+    // (resolution + diagonal), refreshed on resize and config changes.
+    let mut active_ov = layout_spec.pick(screen_key(&window)).cloned();
+
     let mut gfx = gfx::Gfx::new(&window);
 
     // System telemetry in the background.
@@ -197,11 +201,12 @@ fn main() {
                     }
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                         gfx.resize();
+                        active_ov = layout_spec.pick(screen_key(&window)).cloned();
                     }
                     WindowEvent::ModifiersChanged(m) => mods = m.state(),
                     WindowEvent::CursorMoved { position, .. } => {
                         mouse = (position.x as f32, position.y as f32);
-                        if editor.active {
+                        if editor.active && !settings.open {
                             let size = window.inner_size();
                             let (fw, fh) = (size.width as f32, size.height as f32);
                             editor.mouse_move(mouse.0, mouse.1, fw, fh);
@@ -224,8 +229,14 @@ fn main() {
                         }
                         // Pointer cursor over the terminal tabs.
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
-                            .padded(ui_padding);
+                        let layout = outer_layout(
+                            &layout_spec,
+                            active_ov.as_ref(),
+                            size.width as f32,
+                            size.height as f32,
+                            ui_padding,
+                        )
+                        .padded(ui_padding);
                         let pointer = if settings.open {
                             settings.hover(mouse.0, mouse.1)
                         } else {
@@ -254,8 +265,14 @@ fn main() {
                             MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
                         };
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
-                            .padded(ui_padding);
+                        let layout = outer_layout(
+                            &layout_spec,
+                            active_ov.as_ref(),
+                            size.width as f32,
+                            size.height as f32,
+                            ui_padding,
+                        )
+                        .padded(ui_padding);
                         if layout.p(widgets::Panel::Shell).contains(mouse.0, mouse.1) {
                             if let Some(s) = sessions[active].as_mut() {
                                 s.term.scroll_view((dy * 3.0) as i32);
@@ -269,14 +286,31 @@ fn main() {
                         button: MouseButton::Left,
                         ..
                     } => {
-                        if editor.active {
+                        if editor.active && !settings.open {
                             editor.mouse_up();
+                            return;
+                        }
+                        if editor.active && settings.open {
+                            settings.release();
+                            let (snap, cols, rows, pad) = config::grid_prefs();
+                            let size = window.inner_size();
+                            editor.sync_prefs(
+                                snap,
+                                cols,
+                                rows,
+                                pad as f32,
+                                size.width as f32,
+                                size.height as f32,
+                            );
+                            ui_padding = pad as f32;
                             return;
                         }
                         if settings.open && settings.release() {
                                 let (new_cfg, warn) = config::resolve();
                                 theme = new_cfg.theme;
                                 layout_spec = new_cfg.layout;
+                                active_ov =
+                                    layout_spec.pick(screen_key(&window)).cloned();
                                 if let Some(w) = warn {
                                     popup.show(w);
                                 }
@@ -324,8 +358,14 @@ fn main() {
                         ..
                     } => {
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
-                            .padded(ui_padding);
+                        let layout = outer_layout(
+                            &layout_spec,
+                            active_ov.as_ref(),
+                            size.width as f32,
+                            size.height as f32,
+                            ui_padding,
+                        )
+                        .padded(ui_padding);
                         // A click on the warning popup dismisses it.
                         if popup.click(
                             mouse.0,
@@ -335,8 +375,9 @@ fn main() {
                         ) {
                             return;
                         }
-                        // The layout editor captures all clicks while active.
-                        if editor.active {
+                        // The layout editor captures all clicks while active
+                        // (unless the settings window is open over it).
+                        if editor.active && !settings.open {
                             match editor.mouse_down(
                                 mouse.0,
                                 mouse.1,
@@ -344,7 +385,8 @@ fn main() {
                                 size.height as f32,
                             ) {
                                 widgets::editor::EditorHit::Save => {
-                                    // Overwrite the currently selected layout.
+                                    // Overwrite the currently selected layout —
+                                    // only the changes, for this screen.
                                     let name = config::effective_components()
                                         .1
                                         .unwrap_or_else(|| "default".to_string());
@@ -354,13 +396,22 @@ fn main() {
                                         false,
                                         &mut theme,
                                         &mut layout_spec,
+                                        &mut active_ov,
                                         &mut popup,
+                                        screen_key(&window),
                                     );
                                 }
                                 widgets::editor::EditorHit::SaveAs => {
                                     editor.naming = Some(String::new());
                                 }
-                                widgets::editor::EditorHit::Cancel => editor.stop(),
+                                widgets::editor::EditorHit::Cancel => {
+                                    // Back to the settings window, GRID view.
+                                    editor.stop();
+                                    settings.show_grid();
+                                }
+                                widgets::editor::EditorHit::Settings => {
+                                    settings.show_grid();
+                                }
                                 widgets::editor::EditorHit::Handled => {}
                             }
                             return;
@@ -376,6 +427,8 @@ fn main() {
                                 let (new_cfg, warn) = config::resolve();
                                 theme = new_cfg.theme;
                                 layout_spec = new_cfg.layout;
+                                active_ov =
+                                    layout_spec.pick(screen_key(&window)).cloned();
                                 if let Some(w) = warn {
                                     popup.show(w);
                                 }
@@ -420,20 +473,38 @@ fn main() {
                             // with the current panel rectangles.
                             if settings.edit_requested {
                                 settings.edit_requested = false;
-                                let (snap, cols, rows, _) = config::grid_prefs();
-                                // The editor edits the OUTER panel rects.
-                                let outer = flex::compute(
-                                    size.width as f32,
-                                    size.height as f32,
-                                    &layout_spec,
-                                );
-                                editor.start(
-                                    &outer,
-                                    size.width as f32,
-                                    size.height as f32,
+                                if !editor.active {
+                                    let (snap, cols, rows, pad) = config::grid_prefs();
+                                    // The editor edits the OUTER panel rects.
+                                    let outer = outer_layout(
+                                        &layout_spec,
+                                        active_ov.as_ref(),
+                                        size.width as f32,
+                                        size.height as f32,
+                                        ui_padding,
+                                    );
+                                    editor.start(
+                                        &outer,
+                                        size.width as f32,
+                                        size.height as f32,
+                                        snap,
+                                        cols,
+                                        rows,
+                                        pad as f32,
+                                    );
+                                }
+                                // With the editor already running the window
+                                // simply hides — back to the grid.
+                            }
+                            if editor.active {
+                                let (snap, cols, rows, pad) = config::grid_prefs();
+                                editor.sync_prefs(
                                     snap,
                                     cols,
                                     rows,
+                                    pad as f32,
+                                    size.width as f32,
+                                    size.height as f32,
                                 );
                             }
                             return;
@@ -505,7 +576,7 @@ fn main() {
                         // Layout editor: the SAVE AS prompt takes typing;
                         // otherwise ESC exits without saving. Nothing
                         // reaches the terminal.
-                        if editor.active {
+                        if editor.active && !settings.open {
                             if editor.naming.is_some() {
                                 match &key_event.logical_key {
                                     Key::Named(NamedKey::Enter) => {
@@ -517,7 +588,9 @@ fn main() {
                                                     true,
                                                     &mut theme,
                                                     &mut layout_spec,
+                                                    &mut active_ov,
                                                     &mut popup,
+                                                    screen_key(&window),
                                                 );
                                             }
                                         }
@@ -652,7 +725,13 @@ fn main() {
                             let layout = if editor.active {
                                 editor.layout(w, h)
                             } else {
-                                flex::compute(w, h, &layout_spec)
+                                outer_layout(
+                                    &layout_spec,
+                                    active_ov.as_ref(),
+                                    w,
+                                    h,
+                                    ui_padding,
+                                )
                             }
                             .padded(ui_padding);
                             // Telemetry widgets — each an individual panel;
@@ -766,21 +845,79 @@ fn main() {
         .expect("event loop ended with an error");
 }
 
+/// The current screen key: monitor resolution + diagonal in inches.
+fn screen_key(window: &winit::window::Window) -> (u32, u32, u32) {
+    match window.current_monitor().or_else(|| window.primary_monitor()) {
+        Some(m) => {
+            let s = m.size();
+            let diag = m
+                .name()
+                .map(|n| config::monitor_diag_inches(&n))
+                .unwrap_or(0);
+            (s.width, s.height, diag)
+        }
+        None => (0, 0, 0),
+    }
+}
+
+/// Outer layout for the current frame: the flex engine result plus the
+/// per-screen override panels (before padding).
+fn outer_layout(
+    def: &config::LayoutDef,
+    active: Option<&config::ResOverride>,
+    w: f32,
+    h: f32,
+    pad: f32,
+) -> widgets::Layout {
+    let mut l = flex::compute(w, h, &def.base, pad);
+    if let Some(ov) = active {
+        for (p, ps) in &ov.panels {
+            l.set(
+                *p,
+                widgets::Rect::new(
+                    ps.x / 100.0 * w,
+                    ps.y / 100.0 * h,
+                    ps.w / 100.0 * w,
+                    ps.h / 100.0 * h,
+                ),
+            );
+        }
+    }
+    l
+}
+
 /// Saves the layout edited in the grid editor and applies it live.
 /// `select` = also make it the selected layout (SAVE AS); a plain SAVE
-/// keeps the current selection, whose file was just overwritten.
+/// keeps the current selection. Only the CHANGED panels are written,
+/// into the section of the current screen (resolution + diagonal).
+#[allow(clippy::too_many_arguments)]
 fn editor_save(
     editor: &mut widgets::editor::Editor,
     name: &str,
     select: bool,
     theme: &mut theme::Theme,
-    layout_spec: &mut widgets::LayoutMode,
+    layout_spec: &mut config::LayoutDef,
+    active_ov: &mut Option<config::ResOverride>,
     popup: &mut widgets::popup::Popup,
+    key: (u32, u32, u32),
 ) {
     if name.is_empty() {
         return;
     }
-    if let Err(e) = config::save_layaut_file(name, &editor.spec()) {
+    // SAVE AS writes ALL panels as the base of the (new) file; SAVE
+    // rewrites the base on its own screen or stores only the changes in
+    // the section of the current screen.
+    let result = if select {
+        config::save_layaut_full(name, &editor.spec(), key)
+    } else {
+        config::save_layaut_overrides(
+            name,
+            key,
+            &editor.changes_since_start(),
+            &editor.spec(),
+        )
+    };
+    if let Err(e) = result {
         popup.show(format!("Cannot save layout '{name}': {e}"));
         return;
     }
@@ -793,8 +930,9 @@ fn editor_save(
     let (new_cfg, warn) = config::resolve();
     *theme = new_cfg.theme;
     *layout_spec = new_cfg.layout;
-    if let Some(w) = warn {
-        popup.show(w);
+    *active_ov = layout_spec.pick(key).cloned();
+    if let Some(wmsg) = warn {
+        popup.show(wmsg);
     }
     editor.stop();
 }

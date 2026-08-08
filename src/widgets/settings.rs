@@ -217,6 +217,18 @@ impl Settings {
         self.view = View::Menu;
     }
 
+    /// Opens the settings window straight at the GRID view — used by the
+    /// layout editor's SETTINGS button and its CANCEL return path.
+    pub fn show_grid(&mut self) {
+        self.open = true;
+        let (snap, cols, rows, pad) = config::grid_prefs();
+        self.grid_snap = snap;
+        self.grid_cols = cols;
+        self.grid_rows = rows;
+        self.grid_pad = pad;
+        self.view = View::Grid;
+    }
+
     pub fn close(&mut self) {
         self.open = false;
     }

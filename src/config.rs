@@ -41,9 +41,42 @@ use crate::widgets::{FlexColumn, FlexLayaut, LayoutMode, LayoutSpec, Panel, Pane
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// A per-resolution override: panel rectangles saved ONLY for a given
+/// screen resolution and diagonal ("[1920x1080@27]" sections of a
+/// .layaut file). Contains just the panels that were changed.
+#[derive(Clone)]
+pub struct ResOverride {
+    pub w: u32,
+    pub h: u32,
+    pub diag: u32,
+    pub panels: Vec<(Panel, PanelSpec)>,
+}
+
+/// A complete layout definition: the base (built-in flex, a custom flex
+/// description or a legacy fixed spec) plus the per-resolution override
+/// sections from the same .layaut file.
+#[derive(Clone, Default)]
+pub struct LayoutDef {
+    pub base: LayoutMode,
+    pub overrides: Vec<ResOverride>,
+}
+
+impl LayoutDef {
+    fn from_base(base: LayoutMode) -> Self {
+        LayoutDef { base, overrides: Vec::new() }
+    }
+
+    /// The override matching the given screen (resolution + diagonal).
+    pub fn pick(&self, key: (u32, u32, u32)) -> Option<&ResOverride> {
+        self.overrides
+            .iter()
+            .find(|o| (o.w, o.h, o.diag) == key)
+    }
+}
+
 pub struct Config {
     pub theme: Theme,
-    pub layout: LayoutMode,
+    pub layout: LayoutDef,
 }
 
 /// Theme found in ~/.config/ng-term/themes (name from the metafile).
@@ -106,23 +139,100 @@ pub fn load() -> (Config, Option<String>) {
 /// Layout by name: a custom file from themes/layauts — flexbox format
 /// ([column] sections) or the legacy fixed format — or, for "default"
 /// (when no such file exists), the built-in flexbox layout (src/flex.rs).
-fn layaut_by_name(name: &str) -> Option<LayoutMode> {
+fn layaut_by_name(name: &str) -> Option<LayoutDef> {
     if let Ok(text) = std::fs::read_to_string(layauts_dir().join(format!("{name}.layaut"))) {
-        if text.contains("[column]") {
-            return Some(match parse_flex_layaut(&text) {
-                Some(fl) => LayoutMode::Custom(fl),
-                None => {
-                    eprintln!("ng-term: no valid columns in '{name}.layaut' — using the default layout");
-                    LayoutMode::Flex
-                }
-            });
-        }
-        return Some(LayoutMode::Fixed(parse_layaut(&text)));
+        return Some(parse_layaut_file(&text, name));
     }
     if name == "default" {
-        return Some(LayoutMode::Flex);
+        return Some(LayoutDef::from_base(LayoutMode::Flex));
     }
     None
+}
+
+/// Header of a per-resolution override section: "[1920x1080@27]".
+fn parse_res_header(line: &str) -> Option<(u32, u32, u32)> {
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    let (res, diag) = inner.split_once('@')?;
+    let (w, h) = res.split_once('x')?;
+    Some((
+        w.trim().parse().ok()?,
+        h.trim().parse().ok()?,
+        diag.trim().parse().ok()?,
+    ))
+}
+
+/// Splits a .layaut file into its base text and the per-resolution
+/// override sections (everything after the first "[WxH@D]" header).
+fn split_layaut_sections(text: &str) -> (String, Vec<ResOverride>) {
+    let mut base = String::new();
+    let mut sections: Vec<ResOverride> = Vec::new();
+    let mut current: Option<ResOverride> = None;
+    for line in text.lines() {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if let Some((w, h, diag)) = parse_res_header(trimmed) {
+            if let Some(sec) = current.take() {
+                sections.push(sec);
+            }
+            current = Some(ResOverride { w, h, diag, panels: Vec::new() });
+            continue;
+        }
+        match current.as_mut() {
+            None => {
+                base.push_str(line);
+                base.push('\n');
+            }
+            Some(sec) => {
+                let Some((k, v)) = trimmed.split_once('=') else { continue };
+                let nums: Vec<f32> = v
+                    .split_whitespace()
+                    .filter_map(|t| t.parse::<f32>().ok())
+                    .collect();
+                if nums.len() != 4 {
+                    continue;
+                }
+                if let Some(panel) = Panel::from_name(k.trim()) {
+                    sec.panels.retain(|(p, _)| *p != panel);
+                    sec.panels.push((
+                        panel,
+                        PanelSpec { x: nums[0], y: nums[1], w: nums[2], h: nums[3] },
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(sec) = current.take() {
+        sections.push(sec);
+    }
+    (base, sections)
+}
+
+/// Parses a complete .layaut file: the base (flex or legacy format; an
+/// empty base means the built-in default) plus the resolution sections.
+fn parse_layaut_file(text: &str, name: &str) -> LayoutDef {
+    let (base_text, overrides) = split_layaut_sections(text);
+    let has_panel_lines = base_text.lines().any(|l| {
+        let t = l.split('#').next().unwrap_or("").trim();
+        t.split_once('=')
+            .and_then(|(k, _)| Panel::from_name(k.trim()))
+            .is_some()
+    });
+    let base = if base_text.contains("[column]") {
+        match parse_flex_layaut(&base_text) {
+            Some(fl) => LayoutMode::Custom(fl),
+            None => {
+                eprintln!(
+                    "ng-term: no valid columns in '{name}.layaut' — using the default layout"
+                );
+                LayoutMode::Flex
+            }
+        }
+    } else if has_panel_lines {
+        LayoutMode::Fixed(parse_layaut(&base_text))
+    } else {
+        // Overrides only: the built-in default is the base.
+        LayoutMode::Flex
+    };
+    LayoutDef { base, overrides }
 }
 
 /// Parses the flexbox .layaut format (see the module header).
@@ -560,16 +670,30 @@ pub fn select_layaut(name: &str) {
     canonicalize_components();
 }
 
-/// Writes a layout edited in the grid editor to themes/layauts/<name>.layaut
-/// (the fixed percent format; panels hidden in the editor stay off-screen).
-pub fn save_layaut_file(name: &str, spec: &LayoutSpec) -> std::io::Result<()> {
-    let mut text = String::from(
+/// The screen key recorded in a file's base ("screen = 1920x1080@27").
+fn base_screen_of(base_text: &str) -> Option<(u32, u32, u32)> {
+    for line in base_text.lines() {
+        let t = line.split('#').next().unwrap_or("").trim();
+        if let Some((k, v)) = t.split_once('=') {
+            if k.trim() == "screen" {
+                return parse_res_header(&format!("[{}]", v.trim()));
+            }
+        }
+    }
+    None
+}
+
+/// Serializes a FULL layout as the base of a .layaut file, recording
+/// the screen it was created on.
+fn serialize_base(spec: &LayoutSpec, key: (u32, u32, u32)) -> String {
+    let mut out = String::from(
         "# ng-term layout saved from the grid editor.\n\
-         # Format: <panel> = x y w h (percent of the window, 16:9 reference).\n",
+         # Format: <panel> = x y w h (percent of the window).\n",
     );
+    out.push_str(&format!("screen = {}x{}@{}\n", key.0, key.1, key.2));
     for panel in Panel::ALL {
         let ps = spec.p(panel);
-        text.push_str(&format!(
+        out.push_str(&format!(
             "{} = {:.2} {:.2} {:.2} {:.2}\n",
             panel.name(),
             ps.x,
@@ -578,9 +702,126 @@ pub fn save_layaut_file(name: &str, spec: &LayoutSpec) -> std::io::Result<()> {
             ps.h
         ));
     }
+    out
+}
+
+fn serialize_sections(out: &mut String, sections: &[ResOverride]) {
+    for sec in sections {
+        out.push('\n');
+        out.push_str(&format!("[{}x{}@{}]\n", sec.w, sec.h, sec.diag));
+        for (panel, ps) in &sec.panels {
+            out.push_str(&format!(
+                "{} = {:.2} {:.2} {:.2} {:.2}\n",
+                panel.name(),
+                ps.x,
+                ps.y,
+                ps.w,
+                ps.h
+            ));
+        }
+    }
+}
+
+/// SAVE AS: writes ALL panels into the MAIN section (the base) of a new
+/// .layaut file, recording the screen it was created on. Any previous
+/// content of the file is replaced.
+pub fn save_layaut_full(
+    name: &str,
+    spec: &LayoutSpec,
+    key: (u32, u32, u32),
+) -> std::io::Result<()> {
     let dir = layauts_dir();
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(format!("{name}.layaut")), text)
+    std::fs::write(dir.join(format!("{name}.layaut")), serialize_base(spec, key))
+}
+
+/// SAVE: on the screen the base was created on, the base itself is
+/// rewritten with the full layout; on ANY OTHER screen only the changed
+/// panels are written into that screen's "[WxH@D]" section. The rest of
+/// the file always stays untouched.
+pub fn save_layaut_overrides(
+    name: &str,
+    key: (u32, u32, u32),
+    changes: &[(Panel, PanelSpec)],
+    full: &LayoutSpec,
+) -> std::io::Result<()> {
+    let dir = layauts_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.layaut"));
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let (base, mut sections) = split_layaut_sections(&text);
+
+    if base_screen_of(&base) == Some(key) {
+        // Editing on the base's own screen: rewrite the base in full.
+        let mut out = serialize_base(full, key);
+        serialize_sections(&mut out, &sections);
+        return std::fs::write(path, out);
+    }
+
+    // Another screen: merge the changes into its section.
+    let sec = match sections
+        .iter_mut()
+        .find(|o| (o.w, o.h, o.diag) == key)
+    {
+        Some(s) => s,
+        None => {
+            sections.push(ResOverride {
+                w: key.0,
+                h: key.1,
+                diag: key.2,
+                panels: Vec::new(),
+            });
+            sections.last_mut().unwrap()
+        }
+    };
+    for (panel, spec) in changes {
+        sec.panels.retain(|(p, _)| p != panel);
+        sec.panels.push((*panel, *spec));
+    }
+
+    let mut out = String::new();
+    let base_trim = base.trim_end();
+    if !base_trim.is_empty() {
+        out.push_str(base_trim);
+        out.push('\n');
+    } else {
+        out.push_str(
+            "# ng-term layout: per-screen overrides on top of the default layout.\n",
+        );
+    }
+    serialize_sections(&mut out, &sections);
+    std::fs::write(path, out)
+}
+
+/// Screen diagonal in inches of the monitor with the given connector
+/// name (EDID bytes 21/22, physical size in cm); 0 = unknown.
+pub fn monitor_diag_inches(monitor_name: &str) -> u32 {
+    let connector = monitor_name
+        .split_whitespace()
+        .next()
+        .unwrap_or(monitor_name);
+    let suffix = format!("-{connector}");
+    let Some(dir) = std::fs::read_dir("/sys/class/drm")
+        .ok()
+        .and_then(|rd| {
+            rd.flatten().map(|e| e.path()).find(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().ends_with(&suffix))
+                    .unwrap_or(false)
+            })
+        })
+    else {
+        return 0;
+    };
+    let Ok(edid) = std::fs::read(dir.join("edid")) else { return 0 };
+    if edid.len() >= 23 {
+        let w = edid[21] as f32;
+        let h = edid[22] as f32;
+        if w > 0.0 && h > 0.0 {
+            return ((w * w + h * h).sqrt() / 2.54).round() as u32;
+        }
+    }
+    0
 }
 
 /// Sets Key=Value in ng-term.conf, preserving the rest of the file.
@@ -785,7 +1026,7 @@ fn load_theme(
                 }
                 Err(_) => std::fs::read_to_string(&p)
                     .ok()
-                    .map(|l| LayoutMode::Fixed(parse_layaut(&l)))
+                    .map(|l| parse_layaut_file(&l, name))
                     .unwrap_or_default(),
             },
             None => layaut_by_name("default").unwrap_or_default(),
@@ -928,8 +1169,93 @@ fn parse_layaut(src: &str) -> LayoutSpec {
         };
         match Panel::from_name(k.trim()) {
             Some(panel) => spec.set(panel, p),
-            None => eprintln!("ng-term: unknown panel in .layaut: {}", k.trim()),
+            None => {
+                // "screen" is base metadata (the screen the base was
+                // created on), not a panel.
+                if k.trim() != "screen" {
+                    eprintln!("ng-term: unknown panel in .layaut: {}", k.trim());
+                }
+            }
         }
     }
     spec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SAVE AS writes the full base recording its screen; SAVE on the
+    /// base's screen rewrites the base, SAVE on other screens stores
+    /// only the changes in their sections; everything else is preserved.
+    #[test]
+    fn overrides_roundtrip() {
+        let name = "unittest-roundtrip";
+        let path = layauts_dir().join(format!("{name}.layaut"));
+        std::fs::create_dir_all(layauts_dir()).unwrap();
+
+        // SAVE AS on a 2560x1440 32" screen: the full base.
+        let mut full = LayoutSpec::default();
+        full.set(Panel::Clock, PanelSpec { x: 1.0, y: 2.0, w: 10.0, h: 10.0 });
+        full.set(Panel::Shell, PanelSpec { x: 20.0, y: 2.0, w: 60.0, h: 60.0 });
+        save_layaut_full(name, &full, (2560, 1440, 32)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("screen = 2560x1440@32"));
+        assert!(text.contains("clock = 1.00 2.00 10.00 10.00"));
+
+        // SAVE on the SAME screen: the base itself is rewritten in full.
+        let mut full2 = full.clone();
+        full2.set(Panel::Clock, PanelSpec { x: 3.0, y: 4.0, w: 11.0, h: 11.0 });
+        save_layaut_overrides(name, (2560, 1440, 32), &[], &full2).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("clock = 3.00 4.00 11.00 11.00"));
+        assert!(!text.contains("[2560x1440@32]"));
+
+        // First save on a DIFFERENT screen: one changed panel -> section.
+        let fs_spec = PanelSpec { x: 30.0, y: 10.0, w: 20.0, h: 40.0 };
+        save_layaut_overrides(
+            name,
+            (1920, 1080, 27),
+            &[(Panel::Filesystem, fs_spec)],
+            &full2,
+        )
+        .unwrap();
+        // Another screen: another panel.
+        let kb_spec = PanelSpec { x: 5.0, y: 60.0, w: 90.0, h: 30.0 };
+        save_layaut_overrides(
+            name,
+            (1280, 720, 7),
+            &[(Panel::Keyboard, kb_spec)],
+            &full2,
+        )
+        .unwrap();
+        // First screen again: update the same panel.
+        let fs_spec2 = PanelSpec { x: 40.0, y: 12.0, w: 22.0, h: 44.0 };
+        save_layaut_overrides(
+            name,
+            (1920, 1080, 27),
+            &[(Panel::Filesystem, fs_spec2)],
+            &full2,
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let def = parse_layaut_file(&text, name);
+        // Base preserved (rewritten clock position from the same-screen SAVE).
+        assert!(text.contains("clock = 3.00 4.00 11.00 11.00"));
+        assert!(matches!(def.base, LayoutMode::Fixed(_)));
+        // Two sections, exact matches only.
+        assert_eq!(def.overrides.len(), 2);
+        assert!(def.pick((2560, 1440, 27)).is_none());
+        let big = def.pick((1920, 1080, 27)).unwrap();
+        assert_eq!(big.panels.len(), 1);
+        let (p, ps) = &big.panels[0];
+        assert_eq!(*p, Panel::Filesystem);
+        assert!((ps.x - 40.0).abs() < 0.01 && (ps.h - 44.0).abs() < 0.01);
+        let small = def.pick((1280, 720, 7)).unwrap();
+        assert_eq!(small.panels.len(), 1);
+        assert_eq!(small.panels[0].0, Panel::Keyboard);
+
+        std::fs::remove_file(&path).unwrap();
+    }
 }
