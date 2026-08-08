@@ -6,6 +6,7 @@ pub mod boot;
 pub mod clock;
 pub mod control;
 pub mod cpu;
+pub mod editor;
 pub mod filesystem;
 pub mod hardware;
 pub mod keyboard;
@@ -16,7 +17,6 @@ pub mod processes;
 pub mod settings;
 pub mod shell;
 pub mod sysinfo;
-pub mod telemetry;
 
 use crate::draw::DrawList;
 use crate::font::{FontSystem, FONT_UI};
@@ -57,55 +57,106 @@ pub struct PanelSpec {
     pub h: f32,
 }
 
-/// Panel layout — default or loaded from the theme's .layaut file.
-#[derive(Clone)]
-pub struct LayoutSpec {
-    pub left_col: PanelSpec,
-    pub shell: PanelSpec,
-    pub right_col: PanelSpec,
-    pub filesystem: PanelSpec,
-    pub keyboard: PanelSpec,
-    pub control: PanelSpec,
-}
-
-impl Default for LayoutSpec {
-    fn default() -> Self {
-        LayoutSpec {
-            left_col: PanelSpec { x: 0.6, y: 2.5, w: 16.4, h: 59.5 },
-            shell: PanelSpec { x: 17.5, y: 2.5, w: 65.0, h: 60.3 },
-            right_col: PanelSpec { x: 83.0, y: 2.5, w: 16.4, h: 59.5 },
-            // Files in the right column under NETWORK STATUS, down to the bottom.
-            filesystem: PanelSpec { x: 83.0, y: 17.4, w: 16.4, h: 79.6 },
-            // Keyboard directly under the terminal, matching its width.
-            keyboard: PanelSpec { x: 17.5, y: 64.5, w: 65.0, h: 32.5 },
-            // Program control panel in the bottom-left corner.
-            control: PanelSpec { x: 0.6, y: 64.5, w: 16.4, h: 32.5 },
-        }
-    }
-}
-
-/// Panels a layout can place.
+/// Individually placeable widgets (panels) of the interface.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
 pub enum Panel {
-    LeftCol,
+    Clock = 0,
+    Sysinfo,
+    Hardware,
+    Cpu,
+    Memory,
+    Processes,
     Shell,
-    RightCol,
+    Network,
     Filesystem,
     Keyboard,
     Control,
 }
 
+pub const PANEL_COUNT: usize = 11;
+
 impl Panel {
+    pub const ALL: [Panel; PANEL_COUNT] = [
+        Panel::Clock,
+        Panel::Sysinfo,
+        Panel::Hardware,
+        Panel::Cpu,
+        Panel::Memory,
+        Panel::Processes,
+        Panel::Shell,
+        Panel::Network,
+        Panel::Filesystem,
+        Panel::Keyboard,
+        Panel::Control,
+    ];
+
+    pub fn idx(self) -> usize {
+        self as usize
+    }
+
+    /// Name used in .layaut files.
+    pub fn name(self) -> &'static str {
+        match self {
+            Panel::Clock => "clock",
+            Panel::Sysinfo => "sysinfo",
+            Panel::Hardware => "hardware",
+            Panel::Cpu => "cpu",
+            Panel::Memory => "memory",
+            Panel::Processes => "processes",
+            Panel::Shell => "shell",
+            Panel::Network => "network",
+            Panel::Filesystem => "filesystem",
+            Panel::Keyboard => "keyboard",
+            Panel::Control => "control",
+        }
+    }
+
+    /// Label shown in the layout editor.
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Clock => "CLOCK",
+            Panel::Sysinfo => "SYSTEM INFO",
+            Panel::Hardware => "HARDWARE",
+            Panel::Cpu => "CPU",
+            Panel::Memory => "MEMORY",
+            Panel::Processes => "PROCESSES",
+            Panel::Shell => "SHELL",
+            Panel::Network => "NETWORK",
+            Panel::Filesystem => "FILESYSTEM",
+            Panel::Keyboard => "KEYBOARD",
+            Panel::Control => "CONTROL",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Panel> {
-        Some(match name {
-            "left_col" => Panel::LeftCol,
-            "shell" => Panel::Shell,
-            "right_col" => Panel::RightCol,
-            "filesystem" => Panel::Filesystem,
-            "keyboard" => Panel::Keyboard,
-            "control" => Panel::Control,
-            _ => return None,
-        })
+        Panel::ALL.into_iter().find(|p| p.name() == name)
+    }
+}
+
+/// A panel placed far outside the window = hidden.
+pub const OFF_SPEC: PanelSpec = PanelSpec { x: 200.0, y: 0.0, w: 20.0, h: 25.0 };
+
+/// Panel layout — positions of all panels loaded from a legacy .layaut
+/// file (percent of the window at the 16:9 reference). Panels missing
+/// from the file stay hidden.
+#[derive(Clone)]
+pub struct LayoutSpec {
+    pub panels: [PanelSpec; PANEL_COUNT],
+}
+
+impl LayoutSpec {
+    pub fn p(&self, p: Panel) -> &PanelSpec {
+        &self.panels[p.idx()]
+    }
+    pub fn set(&mut self, p: Panel, s: PanelSpec) {
+        self.panels[p.idx()] = s;
+    }
+}
+
+impl Default for LayoutSpec {
+    fn default() -> Self {
+        LayoutSpec { panels: [OFF_SPEC; PANEL_COUNT] }
     }
 }
 
@@ -157,26 +208,44 @@ impl Default for LayoutMode {
 
 /// Computed panel rectangles (in physical pixels).
 pub struct Layout {
-    pub left_col: Rect,
-    pub shell: Rect,
-    pub right_col: Rect,
-    pub filesystem: Rect,
-    pub keyboard: Rect,
-    pub control: Rect,
+    pub panels: [Rect; PANEL_COUNT],
 }
 
 impl Layout {
+    /// All panels off-screen (starting point for layout engines).
+    pub fn empty(w: f32, h: f32) -> Layout {
+        Layout { panels: [Rect::new(w * 2.0, 0.0, w * 0.16, h * 0.6); PANEL_COUNT] }
+    }
+
+    /// The rectangle of a panel.
+    pub fn p(&self, p: Panel) -> Rect {
+        self.panels[p.idx()]
+    }
+
+    pub fn set(&mut self, p: Panel, r: Rect) {
+        self.panels[p.idx()] = r;
+    }
+
+    /// Insets every panel by the UI padding: the space between the
+    /// content and the outer (resize) edge of the panel. Applied to
+    /// drawing and hit-testing; the outer rectangles stay authoritative
+    /// for layout files and the grid editor.
+    pub fn padded(&self, pad: f32) -> Layout {
+        let ins = |r: &Rect| {
+            let p = pad.min(r.w / 4.0).min(r.h / 4.0).max(0.0);
+            Rect::new(r.x + p, r.y + p, r.w - 2.0 * p, r.h - 2.0 * p)
+        };
+        Layout { panels: std::array::from_fn(|i| ins(&self.panels[i])) }
+    }
+
     pub fn compute(w: f32, h: f32, spec: &LayoutSpec) -> Self {
         let vw = w / 100.0;
         let vh = h / 100.0;
-        let r = |p: &PanelSpec| Rect::new(p.x * vw, p.y * vh, p.w * vw, p.h * vh);
         Layout {
-            left_col: r(&spec.left_col),
-            shell: r(&spec.shell),
-            right_col: r(&spec.right_col),
-            filesystem: r(&spec.filesystem),
-            keyboard: r(&spec.keyboard),
-            control: r(&spec.control),
+            panels: std::array::from_fn(|i| {
+                let p = &spec.panels[i];
+                Rect::new(p.x * vw, p.y * vh, p.w * vw, p.h * vh)
+            }),
         }
     }
 }

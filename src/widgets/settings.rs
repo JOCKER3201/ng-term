@@ -17,6 +17,7 @@ enum View {
     Styles,
     Layauts,
     Font,
+    Grid,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -31,6 +32,12 @@ enum Act {
     Style(usize),
     Layaut(usize),
     OpenFont,
+    OpenGrid,
+    ToggleSnap,
+    GridCols(i32),
+    GridRows(i32),
+    PadTrack,
+    EditGrid,
     SizeTrack(Sect),
     FamilyBtn(Sect),
     WeightBtn(Sect),
@@ -75,6 +82,16 @@ pub struct Settings {
     dropdown: Option<Dropdown>,
     /// Moment otwarcia listy — do animacji harmonijki.
     dropdown_since: Option<Instant>,
+    /// Grid editor preferences (GRID view).
+    grid_snap: bool,
+    grid_cols: u32,
+    grid_rows: u32,
+    /// Widget padding in px (0-40) + its slider state.
+    grid_pad: u32,
+    dragging_pad: bool,
+    pad_rect: Rect,
+    /// Set by EDIT GRID — main enters the layout editor and clears it.
+    pub edit_requested: bool,
     hits: Vec<(Rect, Act)>,
     flash: Option<(Act, Instant)>,
 }
@@ -105,6 +122,13 @@ impl Settings {
             slider_rect: [Rect::new(0.0, 0.0, 0.0, 0.0); 2],
             dropdown: None,
             dropdown_since: None,
+            grid_snap: false,
+            grid_cols: 12,
+            grid_rows: 8,
+            grid_pad: 8,
+            dragging_pad: false,
+            pad_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            edit_requested: false,
             hits: Vec::new(),
             flash: None,
         }
@@ -133,10 +157,29 @@ impl Settings {
         self.cur_size[i] = (min + t * (max - min)).round() as u32;
     }
 
+    fn set_pad_from_x(&mut self, x: f32) {
+        let track = self.pad_rect;
+        let t = ((x - track.x) / track.w.max(1.0)).clamp(0.0, 1.0);
+        self.grid_pad = (t * 40.0).round() as u32;
+    }
+
     /// Mouse move while dragging a size slider.
     pub fn drag(&mut self, x: f32) {
         if let Some(sect) = self.dragging_size {
             self.set_size_from_x(sect, x);
+        }
+        if self.dragging_pad {
+            self.set_pad_from_x(x);
+        }
+    }
+
+    /// Live widget padding while the GRID view is open — applied every
+    /// frame so dragging the PADDING slider works immediately.
+    pub fn live_padding(&self) -> Option<u32> {
+        if self.open && self.view == View::Grid {
+            Some(self.grid_pad)
+        } else {
+            None
         }
     }
 
@@ -155,6 +198,10 @@ impl Settings {
 
     /// Mouse button released; returns true when the configuration changed.
     pub fn release(&mut self) -> bool {
+        if self.dragging_pad {
+            self.dragging_pad = false;
+            config::set_grid_padding(self.grid_pad);
+        }
         if let Some(sect) = self.dragging_size.take() {
             let i = Self::sect_idx(sect);
             match sect {
@@ -265,6 +312,34 @@ impl Settings {
                     return true;
                 }
             }
+            Act::OpenGrid => {
+                let (snap, cols, rows, pad) = config::grid_prefs();
+                self.grid_snap = snap;
+                self.grid_cols = cols;
+                self.grid_rows = rows;
+                self.grid_pad = pad;
+                self.view = View::Grid;
+            }
+            Act::ToggleSnap => {
+                self.grid_snap = !self.grid_snap;
+                config::set_grid_snap(self.grid_snap);
+            }
+            Act::GridCols(d) => {
+                self.grid_cols = (self.grid_cols as i32 + d).clamp(2, 32) as u32;
+                config::set_grid_cols(self.grid_cols);
+            }
+            Act::GridRows(d) => {
+                self.grid_rows = (self.grid_rows as i32 + d).clamp(2, 32) as u32;
+                config::set_grid_rows(self.grid_rows);
+            }
+            Act::PadTrack => {
+                self.dragging_pad = true;
+                self.set_pad_from_x(x);
+            }
+            Act::EditGrid => {
+                self.edit_requested = true;
+                self.open = false;
+            }
             Act::OpenFont => {
                 self.families = [
                     crate::font::available_mono_families(),
@@ -370,6 +445,7 @@ impl Settings {
             View::Styles => "SETTINGS \u{2014} STYLES",
             View::Layauts => "SETTINGS \u{2014} LAYAUTS",
             View::Font => "SETTINGS \u{2014} FONT",
+            View::Grid => "SETTINGS \u{2014} GRID",
         };
         ctx.dl.module_title(
             ctx.fonts,
@@ -401,21 +477,18 @@ impl Settings {
                     "CLOSE",
                     Act::Close,
                 );
-                // Menu entries: THEMES and FONT.
+                // Menu entries: THEMES, FONT and GRID.
                 let bw = content.w * 0.6;
                 let bx = content.x + (content.w - bw) / 2.0;
-                self.button(
-                    ctx,
-                    Rect::new(bx, content.y + btn_h + gap, bw, btn_h),
-                    "THEMES",
-                    Act::OpenThemes,
-                );
-                self.button(
-                    ctx,
-                    Rect::new(bx, content.y + (btn_h + gap) * 2.0, bw, btn_h),
-                    "FONT",
-                    Act::OpenFont,
-                );
+                let entries = [
+                    ("THEMES", Act::OpenThemes),
+                    ("FONT", Act::OpenFont),
+                    ("GRID", Act::OpenGrid),
+                ];
+                for (i, (label, act)) in entries.into_iter().enumerate() {
+                    let y = content.y + (btn_h + gap) * (i as f32 + 1.0);
+                    self.button(ctx, Rect::new(bx, y, bw, btn_h), label, act);
+                }
             }
             View::Themes => {
                 // Submenu: LOOK / STYLES / LAYAUTS.
@@ -454,7 +527,140 @@ impl Settings {
                 self.empty_note(ctx, content, btn_h, gap, &names, "NO LAYAUTS FOUND");
             }
             View::Font => self.draw_font_view(ctx, content, btn_h, gap, corner_w),
+            View::Grid => self.draw_grid_view(ctx, content, btn_h, gap, corner_w),
         }
+    }
+
+    /// GRID view: snap checkbox, column/row counts and the EDIT GRID
+    /// button that enters the layout editor.
+    fn draw_grid_view(
+        &mut self,
+        ctx: &mut Ctx,
+        content: Rect,
+        btn_h: f32,
+        gap: f32,
+        corner_w: f32,
+    ) {
+        let base = ctx.theme.base;
+        self.button(
+            ctx,
+            Rect::new(content.x, content.y, corner_w, btn_h),
+            "BACK",
+            Act::Back,
+        );
+
+        let px = ctx.font_px(1.0);
+        let mut y = content.y + btn_h + gap * 2.0;
+
+        // SNAP TO GRID checkbox (the whole row toggles).
+        let row = Rect::new(content.x, y, content.w, btn_h);
+        let hover = row.contains(ctx.mouse.0, ctx.mouse.1);
+        let bx_s = btn_h * 0.55;
+        let bx_r = Rect::new(row.x, row.y + (btn_h - bx_s) / 2.0, bx_s, bx_s);
+        ctx.dl.rect_outline(
+            bx_r.x,
+            bx_r.y,
+            bx_r.w,
+            bx_r.h,
+            1.5,
+            base.alpha(if hover { 0.9 } else { 0.5 }),
+        );
+        if self.grid_snap {
+            let m = bx_s * 0.22;
+            ctx.dl
+                .rect(bx_r.x + m, bx_r.y + m, bx_s - 2.0 * m, bx_s - 2.0 * m, base);
+        }
+        ctx.dl.text(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            bx_r.right() + px * 0.8,
+            row.y + (btn_h - px * 1.3) / 2.0,
+            "SNAP TO GRID",
+            if hover { base } else { base.alpha(0.75) },
+            px * 0.1,
+        );
+        self.hits.push((row, Act::ToggleSnap));
+        y += btn_h + gap;
+
+        // COLUMNS / ROWS spinners: label left, [-] value [+] right.
+        for (label, value, minus, plus) in [
+            ("COLUMNS", self.grid_cols, Act::GridCols(-1), Act::GridCols(1)),
+            ("ROWS", self.grid_rows, Act::GridRows(-1), Act::GridRows(1)),
+        ] {
+            ctx.dl.text(
+                ctx.fonts,
+                FONT_UI,
+                px,
+                content.x,
+                y + (btn_h - px * 1.3) / 2.0,
+                label,
+                base.alpha(0.75),
+                px * 0.1,
+            );
+            let bw = btn_h * 1.15;
+            let val_w = px * 3.2;
+            let plus_r = Rect::new(content.right() - bw, y, bw, btn_h);
+            let minus_r = Rect::new(plus_r.x - val_w - bw, y, bw, btn_h);
+            self.button(ctx, minus_r, "-", minus);
+            self.button(ctx, plus_r, "+", plus);
+            ctx.dl.text_center(
+                ctx.fonts,
+                FONT_UI,
+                px,
+                minus_r.right() + val_w / 2.0,
+                y + (btn_h - px * 1.3) / 2.0,
+                &value.to_string(),
+                base,
+                px * 0.1,
+            );
+            y += btn_h + gap;
+        }
+
+        // PADDING slider — same form as the font SIZE sliders.
+        ctx.dl.text(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.x,
+            y + (btn_h - px * 1.3) / 2.0,
+            "PADDING",
+            base.alpha(0.75),
+            px * 0.1,
+        );
+        let label_w = ctx.fonts.measure(FONT_UI, px, "PADDING", px * 0.1) + px * 2.0;
+        let value_w = ctx.fonts.measure(FONT_UI, px, "40 PX", px * 0.05) + px;
+        let track = Rect::new(content.x + label_w, y, content.w - label_w - value_w, btn_h);
+        self.pad_rect = track;
+        let cy = y + btn_h / 2.0;
+        ctx.dl.line(track.x, cy, track.right(), cy, 2.0, base.alpha(0.3));
+        let t = (self.grid_pad as f32 / 40.0).clamp(0.0, 1.0);
+        let knob_x = track.x + t * track.w;
+        ctx.dl.line(track.x, cy, knob_x, cy, 2.0, base);
+        let ks = btn_h * 0.28;
+        ctx.dl.rect(knob_x - ks / 2.0, cy - ks, ks, ks * 2.0, base);
+        ctx.dl.text_right(
+            ctx.fonts,
+            FONT_UI,
+            px,
+            content.right(),
+            y + (btn_h - px * 1.3) / 2.0,
+            &format!("{} PX", self.grid_pad),
+            base,
+            px * 0.05,
+        );
+        self.hits.push((track, Act::PadTrack));
+        y += btn_h + gap;
+
+        // EDIT GRID: hides this window and enters the layout editor.
+        let bw = content.w * 0.6;
+        let bx = content.x + (content.w - bw) / 2.0;
+        self.button(
+            ctx,
+            Rect::new(bx, y + gap, bw, btn_h),
+            "EDIT GRID",
+            Act::EditGrid,
+        );
     }
 
     /// FONT view: TERMINAL and INTERFACE sections, each with a size

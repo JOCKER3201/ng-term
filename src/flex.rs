@@ -8,13 +8,16 @@
 //! and collapse priorities (when a column can no longer fit its minimum
 //! width it disappears — collapse=1 first, then 2, ...). If the control
 //! panel loses its column, it comes back as a full-width bar at the
-//! bottom. On portrait windows the visible panels restack vertically.
-//! The built-in default layout and custom flexbox .layaut files share
-//! this engine; legacy .layaut files (fixed x/y/w/h at the 16:9
-//! reference) are re-adapted to the window with the older transform.
+//! bottom. On portrait windows the visible panels restack vertically
+//! (large columns split into two). Every widget is an individual panel:
+//! clock, sysinfo, hardware, cpu, memory, processes, shell, network,
+//! filesystem, keyboard, control. The built-in default layout and custom
+//! flexbox .layaut files share this engine; legacy .layaut files (fixed
+//! x/y/w/h at the 16:9 reference) are re-adapted with an edge-anchored
+//! transform on landscape and the flex restack on portrait.
 
 use crate::widgets::{
-    FlexColumn, FlexLayaut, Layout, LayoutMode, LayoutSpec, Panel, PanelSpec, Rect,
+    FlexColumn, FlexLayaut, Layout, LayoutMode, LayoutSpec, Panel, Rect, PANEL_COUNT,
 };
 use taffy::prelude::{auto, length, percent};
 use taffy::style::{AvailableSpace, FlexDirection};
@@ -39,16 +42,21 @@ fn default_flex() -> FlexLayaut {
     };
     FlexLayaut {
         columns: vec![
-            col(16.4, SIDE_MIN, SIDE_MAX, 0.0, 2, 2.5, &[
-                (Panel::LeftCol, 59.5),
-                (Panel::Control, 32.5),
+            col(16.4, SIDE_MIN, SIDE_MAX, 0.0, 2, 1.0, &[
+                (Panel::Clock, 7.0),
+                (Panel::Sysinfo, 4.5),
+                (Panel::Hardware, 5.5),
+                (Panel::Cpu, 15.5),
+                (Panel::Memory, 10.5),
+                (Panel::Processes, 11.5),
+                (Panel::Control, 31.0),
             ]),
             col(65.0, CENTER_MIN, f32::INFINITY, 1.0, 0, 1.7, &[
                 (Panel::Shell, 60.3),
                 (Panel::Keyboard, 32.5),
             ]),
             col(16.4, SIDE_MIN, SIDE_MAX, 0.0, 1, 2.5, &[
-                (Panel::RightCol, 12.4),
+                (Panel::Network, 12.4),
                 (Panel::Filesystem, 79.6),
             ]),
         ],
@@ -61,42 +69,27 @@ pub fn compute(w: f32, h: f32, mode: &LayoutMode) -> Layout {
         LayoutMode::Flex => engine(&default_flex(), w, h),
         LayoutMode::Custom(fl) => engine(fl, w, h),
         LayoutMode::Fixed(base) => {
-            let spec = if h > w {
-                reflow_base(base, h)
+            if h > w {
+                // Portrait: restack the panels VISIBLE in the base using
+                // the flex engine (the default structure filtered down).
+                portrait_flex(&filtered_default(base), w, h)
             } else {
-                edge_adapt(base, w / h)
-            };
-            Layout::compute(w, h, &spec)
+                Layout::compute(w, h, &edge_adapt(base, w / h))
+            }
         }
     }
 }
 
-/// Rectangle far outside the window — a hidden (collapsed) panel.
-fn off(w: f32, h: f32) -> Rect {
-    Rect::new(w * 2.0, 0.0, w * 0.16, h * 0.6)
-}
-
-fn set_panel(l: &mut Layout, p: Panel, r: Rect) {
-    match p {
-        Panel::LeftCol => l.left_col = r,
-        Panel::Shell => l.shell = r,
-        Panel::RightCol => l.right_col = r,
-        Panel::Filesystem => l.filesystem = r,
-        Panel::Keyboard => l.keyboard = r,
-        Panel::Control => l.control = r,
+fn engine(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
+    if h > w {
+        portrait_flex(fl, w, h)
+    } else {
+        landscape(fl, w, h)
     }
 }
 
 fn has_panel(fl: &FlexLayaut, p: Panel) -> bool {
     fl.columns.iter().any(|c| c.panels.iter().any(|(k, _)| *k == p))
-}
-
-fn engine(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
-    if h > w {
-        portrait(fl, w, h)
-    } else {
-        landscape(fl, w, h)
-    }
 }
 
 /// Landscape flexbox layout: the columns in a row, solved by taffy.
@@ -130,7 +123,9 @@ fn landscape(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
     // A layout that lost the control panel's column gets a full-width
     // control bar at the bottom instead.
     let control_dropped = has_panel(fl, Panel::Control)
-        && !vis.iter().any(|c| c.panels.iter().any(|(p, _)| *p == Panel::Control));
+        && !vis
+            .iter()
+            .any(|c| c.panels.iter().any(|(p, _)| *p == Panel::Control));
     let bar_h = if control_dropped { h * 0.135 } else { 0.0 };
 
     // Column widths via taffy (flex-basis/grow/shrink + min/max).
@@ -183,14 +178,7 @@ fn landscape(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
     }
     let hi = (content_bottom - top).max(1.0);
 
-    let mut out = Layout {
-        left_col: off(w, h),
-        shell: off(w, h),
-        right_col: off(w, h),
-        filesystem: off(w, h),
-        keyboard: off(w, h),
-        control: off(w, h),
-    };
+    let mut out = Layout::empty(w, h);
     for (c, node) in vis.iter().zip(&nodes) {
         let tl = tf.layout(*node).unwrap();
         let (cx, cw) = (tl.location.x, tl.size.width);
@@ -200,37 +188,62 @@ fn landscape(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
         let mut y = top;
         for (p, wt) in &c.panels {
             let ph = wt / total.max(0.001) * hi;
-            set_panel(&mut out, *p, Rect::new(cx, y, cw, ph));
+            out.set(*p, Rect::new(cx, y, cw, ph));
             y += ph + c.gap / total.max(0.001) * hi;
         }
     }
     if control_dropped {
-        out.control = Rect::new(pad_x, content_bottom + h * 0.015, inner, bar_h);
+        out.set(
+            Panel::Control,
+            Rect::new(pad_x, content_bottom + h * 0.015, inner, bar_h),
+        );
     }
     out
 }
 
-/// Portrait stack: terminal, keyboard, then (on windows tall enough) a
-/// row of the remaining panels with the control panel bottom-anchored;
-/// on phone-sized windows just a full-width control bar.
-fn portrait(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
-    let has_kb = has_panel(fl, Panel::Keyboard);
-    let has_left = has_panel(fl, Panel::LeftCol);
-    let has_right = has_panel(fl, Panel::RightCol);
-    let has_fs = has_panel(fl, Panel::Filesystem);
-    let has_ctl = has_panel(fl, Panel::Control);
-
+/// Portrait restack: terminal, keyboard, then the remaining panels in a
+/// row of columns (a source column with many panels splits in two; the
+/// control panel is anchored at the bottom of its column). Phone-sized
+/// windows show just the terminal, keyboard and a control bar.
+fn portrait_flex(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
     let small = h < 900.0;
     let pad = (w * 0.008).max(4.0);
     let gap = (h * 0.012).max(4.0);
     let iw = w - 2.0 * pad;
+    let mut out = Layout::empty(w, h);
+
+    // Row columns: each source column contributes its panels (minus the
+    // full-width shell/keyboard); more than 4 body panels split in two.
+    let mut chunks: Vec<(Vec<(Panel, f32)>, bool)> = Vec::new();
+    for c in &fl.columns {
+        let body: Vec<(Panel, f32)> = c
+            .panels
+            .iter()
+            .filter(|(p, _)| {
+                !matches!(p, Panel::Shell | Panel::Keyboard | Panel::Control)
+            })
+            .cloned()
+            .collect();
+        let ctl = c.panels.iter().any(|(p, _)| *p == Panel::Control);
+        if body.len() > 4 {
+            let split = 4;
+            chunks.push((body[..split].to_vec(), false));
+            chunks.push((body[split..].to_vec(), ctl));
+        } else if !body.is_empty() || ctl {
+            chunks.push((body, ctl));
+        }
+    }
+
+    let has_shell = has_panel(fl, Panel::Shell);
+    let has_kb = has_panel(fl, Panel::Keyboard);
+    let has_ctl = has_panel(fl, Panel::Control);
+    let has_row = !chunks.is_empty() && !small;
 
     let kb_h = if has_kb {
         if small { h * 0.30 } else { h * 0.185 }
     } else {
         0.0
     };
-    let has_row = (has_left || has_right || has_fs) && !small;
     let row_h = if has_row { h * 0.325 } else { 0.0 };
     // The control bar needs ~13vh: title (3.4) + two buttons (2 x 4.2 + 1.2).
     let ctl_bar_h = if has_ctl && !has_row { h * 0.135 } else { 0.0 };
@@ -243,188 +256,122 @@ fn portrait(fl: &FlexLayaut, w: f32, h: f32) -> Layout {
     }
     let shell_h = (h - 2.0 * gap - used).max(h * 0.2);
 
-    let mut out = Layout {
-        left_col: off(w, h),
-        shell: off(w, h),
-        right_col: off(w, h),
-        filesystem: off(w, h),
-        keyboard: off(w, h),
-        control: off(w, h),
-    };
     let mut y = gap;
-    out.shell = Rect::new(pad, y, iw, shell_h);
-    y += shell_h + gap;
+    if has_shell {
+        out.set(Panel::Shell, Rect::new(pad, y, iw, shell_h));
+        y += shell_h + gap;
+    }
     if kb_h > 0.0 {
-        out.keyboard = Rect::new(pad, y, iw, kb_h);
+        out.set(Panel::Keyboard, Rect::new(pad, y, iw, kb_h));
         y += kb_h + gap;
     }
+    if !has_shell && !has_kb && has_row {
+        // No full-width panels: the row takes the whole height.
+        y = gap;
+    }
+    let row_h = if has_row && !has_shell && !has_kb {
+        h - 2.0 * gap
+    } else {
+        row_h
+    };
+
     if has_row {
-        // Row: telemetry | network + files | control. Left/middle columns
-        // start slightly lower, so their headers (drawn above the column)
-        // line up with the MEMORY title of the control column and all
-        // columns span the same height.
-        let d = h * 0.03;
+        // Column headers (e.g. NETWORK) draw above their rect — start
+        // the columns slightly lower to leave room for them.
+        let d = h * 0.025;
         let cgap = (w * 0.01).max(4.0);
-        let mut units = 0.0f32;
-        if has_left {
-            units += 1.2;
-        }
-        if has_right || has_fs {
-            units += 1.0;
-        }
-        if has_ctl {
-            units += 1.0;
-        }
-        let ncols = (has_left as u32 + (has_right || has_fs) as u32 + has_ctl as u32) as f32;
-        let cw = (iw - cgap * (ncols - 1.0).max(0.0)) / units.max(1.0);
+        let units: f32 = chunks
+            .iter()
+            .map(|(body, _)| if body.len() >= 4 { 1.2 } else { 1.0 })
+            .sum();
+        let ncols = chunks.len() as f32;
+        let cw = (iw - cgap * (ncols - 1.0).max(0.0)) / units.max(0.5);
         let mut x = pad;
-        if has_left {
-            out.left_col = Rect::new(x, y + d, cw * 1.2, row_h - d);
-            x += cw * 1.2 + cgap;
-        }
-        if has_right || has_fs {
-            if has_right {
-                // Short panel: NETWORK STATUS only, the files below it.
-                let nh = if has_fs { h * 0.078 } else { row_h - d };
-                out.right_col = Rect::new(x, y + d, cw, nh);
+        for (body, ctl) in &chunks {
+            let this_w = cw * if body.len() >= 4 { 1.2 } else { 1.0 };
+            let ctl_h = if *ctl { h * 0.135 } else { 0.0 };
+            let stack_h = row_h - d - ctl_h - if *ctl { gap } else { 0.0 };
+            // Stack the body panels by their weights, with a minimum
+            // height so short panels (e.g. NETWORK) keep their rows
+            // readable instead of spilling over the next panel.
+            let gap_w = 1.0f32;
+            let total: f32 = body.iter().map(|(_, wt)| *wt).sum::<f32>()
+                + gap_w * (body.len() as f32 - 1.0).max(0.0);
+            let gap_px = gap_w / total.max(0.001) * stack_h;
+            let mut hs: Vec<f32> = body
+                .iter()
+                .map(|(_, wt)| wt / total.max(0.001) * stack_h)
+                .collect();
+            let min_ph = (h * 0.085).min(stack_h / body.len().max(1) as f32);
+            let mut excess = 0.0;
+            for ph in hs.iter_mut() {
+                if *ph < min_ph {
+                    excess += min_ph - *ph;
+                    *ph = min_ph;
+                }
             }
-            if has_fs {
-                let fs_y = if has_right { y + d + h * 0.09 } else { y + d };
-                out.filesystem = Rect::new(x, fs_y, cw, y + row_h - fs_y);
+            if excess > 0.0 {
+                if let Some(imax) = (0..hs.len())
+                    .max_by(|&a, &b| hs[a].partial_cmp(&hs[b]).unwrap())
+                {
+                    hs[imax] = (hs[imax] - excess).max(min_ph);
+                }
             }
-            x += cw + cgap;
-        }
-        if has_ctl {
-            // The control panel sits at the very bottom of its column;
-            // the space above it takes MEMORY + TOP PROCESSES (main).
-            let ctl_h = h * 0.135;
-            out.control =
-                Rect::new(x, y + row_h - ctl_h, (w - pad - x).max(60.0), ctl_h);
+            let mut py = y + d;
+            for ((p, _), ph) in body.iter().zip(&hs) {
+                out.set(*p, Rect::new(x, py, this_w, *ph));
+                py += ph + gap_px;
+            }
+            if *ctl {
+                out.set(
+                    Panel::Control,
+                    Rect::new(x, y + row_h - ctl_h, this_w, ctl_h),
+                );
+            }
+            x += this_w + cgap;
         }
     } else if ctl_bar_h > 0.0 {
-        out.control = Rect::new(pad, y, iw, ctl_bar_h);
+        out.set(Panel::Control, Rect::new(pad, y, iw, ctl_bar_h));
     }
     out
 }
 
-// ---------------------------------------------------------------------------
-// Adaptation of legacy fixed .layaut files (authored at 16:9).
-
-fn spec(x: f32, y: f32, w: f32, h: f32) -> PanelSpec {
-    PanelSpec { x, y, w, h }
+/// The default flex structure filtered down to the panels visible in a
+/// legacy fixed layout — used for its portrait restack.
+fn filtered_default(base: &LayoutSpec) -> FlexLayaut {
+    let mut fl = default_flex();
+    for c in fl.columns.iter_mut() {
+        c.panels.retain(|(p, _)| base.p(*p).x < 100.0);
+    }
+    fl.columns.retain(|c| !c.panels.is_empty());
+    fl
 }
 
-fn on_screen(p: &PanelSpec) -> bool {
-    p.x < 100.0
-}
-
-/// Landscape: edge-anchored horizontal transform — panels keep their
-/// distance to the nearer window edge, so side columns keep a sane width
-/// on any aspect ratio.
+/// Landscape adaptation of legacy fixed .layaut files (authored at the
+/// 16:9 reference): an edge-anchored horizontal transform — panels keep
+/// their distance to the nearer window edge, so side columns keep a sane
+/// width on any aspect ratio.
 fn edge_adapt(base: &LayoutSpec, ratio: f32) -> LayoutSpec {
     let f = ((16.0 / 9.0) / ratio).clamp(0.5, 1.4);
     if (f - 1.0).abs() < 0.001 {
         return base.clone();
     }
-    let tr = |p: &PanelSpec| -> PanelSpec {
-        if !on_screen(p) {
-            return *p;
+    let mut out = base.clone();
+    for i in 0..PANEL_COUNT {
+        let p = &base.panels[i];
+        if p.x >= 100.0 {
+            continue;
         }
         let a = p.x;
         let b = p.x + p.w;
         let na = if a <= 50.0 { a * f } else { 100.0 - (100.0 - a) * f };
         let nb = if b <= 50.0 { b * f } else { 100.0 - (100.0 - b) * f };
-        spec(na, p.y, (nb - na).max(1.0), p.h)
-    };
-    LayoutSpec {
-        left_col: tr(&base.left_col),
-        shell: tr(&base.shell),
-        right_col: tr(&base.right_col),
-        filesystem: tr(&base.filesystem),
-        keyboard: tr(&base.keyboard),
-        control: tr(&base.control),
-    }
-}
-
-/// Portrait reflow of a fixed base: the panels VISIBLE in the base are
-/// stacked vertically — terminal, keyboard, a row of side panels, control.
-/// Panels placed off-screen in the base stay hidden, so a minimal base
-/// automatically yields the phone arrangement.
-fn reflow_base(base: &LayoutSpec, win_h: f32) -> LayoutSpec {
-    let off = spec(200.0, 0.0, 16.0, 60.0);
-    let small = win_h < 900.0;
-    let has_kb = on_screen(&base.keyboard);
-    let has_left = on_screen(&base.left_col);
-    let has_right = on_screen(&base.right_col);
-    let has_fs = on_screen(&base.filesystem);
-    let has_ctl = on_screen(&base.control);
-    let has_row = has_left || has_right || has_fs;
-
-    let kb_h = if has_kb {
-        if small { 31.0 } else { 18.5 }
-    } else {
-        0.0
-    };
-    let row_h = if has_row { 33.5 } else { 0.0 };
-    let ctl_bar_h = if has_ctl && !has_row { 13.5 } else { 0.0 };
-
-    let gap = 1.5f32;
-    let mut used = 0.0f32;
-    for h in [kb_h, row_h, ctl_bar_h] {
-        if h > 0.0 {
-            used += h + gap;
-        }
-    }
-    let shell_h = (97.0 - gap - used).max(20.0);
-
-    let mut out = LayoutSpec {
-        shell: spec(0.5, gap, 99.0, shell_h),
-        keyboard: off,
-        left_col: off,
-        right_col: off,
-        filesystem: off,
-        control: off,
-    };
-    let mut y = gap + shell_h + gap;
-    if has_kb {
-        out.keyboard = spec(0.5, y, 99.0, kb_h);
-        y += kb_h + gap;
-    }
-    if has_row {
-        let mut cols = 0;
-        if has_left {
-            cols += 1;
-        }
-        if has_right || has_fs {
-            cols += 1;
-        }
-        if has_ctl {
-            cols += 1;
-        }
-        let cw = (99.0 - (cols as f32 - 1.0)) / cols as f32;
-        let mut x = 0.5;
-        if has_left {
-            let w = if cols == 3 { cw * 1.2 } else { cw };
-            out.left_col = spec(x, y, w, row_h);
-            x += w + 1.0;
-        }
-        if has_right || has_fs {
-            let w = cw;
-            if has_right {
-                out.right_col = spec(x, y, w, row_h);
-            }
-            if has_fs {
-                let fs_y = if has_right { y + 9.0 } else { y };
-                out.filesystem = spec(x, fs_y, w, row_h - (fs_y - y));
-            }
-            x += w + 1.0;
-        }
-        if has_ctl {
-            let w = (99.5 - x).max(10.0);
-            out.control = spec(x, y, w, row_h);
-        }
-    } else if has_ctl {
-        out.control = spec(0.5, y, 99.0, ctl_bar_h);
+        out.panels[i] = crate::widgets::PanelSpec {
+            x: na,
+            y: p.y,
+            w: (nb - na).max(1.0),
+            h: p.h,
+        };
     }
     out
 }

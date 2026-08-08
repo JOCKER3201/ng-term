@@ -78,6 +78,8 @@ fn main() {
     // Font preferences (size scales + family/weight, terminal and UI).
     let (mut font_scale, tfam, twgt) = config::term_font_prefs();
     let (mut ui_font_scale, ufam, uwgt) = config::ui_font_prefs();
+    // Widget padding: content inset from the outer panel edge (GRID view).
+    let mut ui_padding = config::grid_prefs().3 as f32;
     let mut last_term_key = (tfam.clone().unwrap_or_default(), twgt.clone().unwrap_or_default());
     let mut last_ui_key = (ufam.clone().unwrap_or_default(), uwgt.clone().unwrap_or_default());
     if tfam.is_some() || twgt.is_some() {
@@ -172,6 +174,7 @@ fn main() {
     let mut fsp = widgets::filesystem::Filesystem::new(home.clone());
     let mut control = widgets::control::Control::new();
     let mut settings = widgets::settings::Settings::new();
+    let mut editor = widgets::editor::Editor::new();
     let mut popup = widgets::popup::Popup::new();
     if let Some(w) = startup_warning {
         popup.show(w);
@@ -197,21 +200,40 @@ fn main() {
                     WindowEvent::ModifiersChanged(m) => mods = m.state(),
                     WindowEvent::CursorMoved { position, .. } => {
                         mouse = (position.x as f32, position.y as f32);
+                        if editor.active {
+                            let size = window.inner_size();
+                            let (fw, fh) = (size.width as f32, size.height as f32);
+                            editor.mouse_move(mouse.0, mouse.1, fw, fh);
+                            // Move/resize cursors over the panels.
+                            use widgets::editor::CursorKind;
+                            window.set_cursor_icon(
+                                match editor.cursor_at(mouse.0, mouse.1, fw, fh) {
+                                    CursorKind::Move => CursorIcon::Grab,
+                                    CursorKind::Ew => CursorIcon::EwResize,
+                                    CursorKind::Ns => CursorIcon::NsResize,
+                                    CursorKind::Nwse => CursorIcon::NwseResize,
+                                    CursorKind::Nesw => CursorIcon::NeswResize,
+                                    CursorKind::Normal => CursorIcon::Default,
+                                },
+                            );
+                            return;
+                        }
                         if settings.open {
                             settings.drag(mouse.0);
                         }
                         // Pointer cursor over the terminal tabs.
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
+                            .padded(ui_padding);
                         let pointer = if settings.open {
                             settings.hover(mouse.0, mouse.1)
                         } else {
                             let over_tab =
-                                widgets::shell::tab_rects(layout.shell, size.height as f32)
+                                widgets::shell::tab_rects(layout.p(widgets::Panel::Shell), size.height as f32)
                                     .iter()
                                     .any(|tr| tr.contains(mouse.0, mouse.1));
                             let over_btn =
-                                widgets::control::button_rects(layout.control, size.height as f32)
+                                widgets::control::button_rects(layout.p(widgets::Panel::Control), size.height as f32)
                                     .iter()
                                     .any(|br| br.contains(mouse.0, mouse.1));
                             over_tab || over_btn
@@ -223,17 +245,21 @@ fn main() {
                         });
                     }
                     WindowEvent::MouseWheel { delta, .. } => {
+                        if editor.active {
+                            return;
+                        }
                         let dy = match delta {
                             MouseScrollDelta::LineDelta(_, y) => y,
                             MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
                         };
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
-                        if layout.shell.contains(mouse.0, mouse.1) {
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
+                            .padded(ui_padding);
+                        if layout.p(widgets::Panel::Shell).contains(mouse.0, mouse.1) {
                             if let Some(s) = sessions[active].as_mut() {
                                 s.term.scroll_view((dy * 3.0) as i32);
                             }
-                        } else if layout.filesystem.contains(mouse.0, mouse.1) {
+                        } else if layout.p(widgets::Panel::Filesystem).contains(mouse.0, mouse.1) {
                             fsp.wheel(dy * 40.0);
                         }
                     }
@@ -242,6 +268,10 @@ fn main() {
                         button: MouseButton::Left,
                         ..
                     } => {
+                        if editor.active {
+                            editor.mouse_up();
+                            return;
+                        }
                         if settings.open && settings.release() {
                                 let (new_cfg, warn) = config::resolve();
                                 theme = new_cfg.theme;
@@ -293,7 +323,8 @@ fn main() {
                         ..
                     } => {
                         let size = window.inner_size();
-                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec);
+                        let layout = flex::compute(size.width as f32, size.height as f32, &layout_spec)
+                            .padded(ui_padding);
                         // A click on the warning popup dismisses it.
                         if popup.click(
                             mouse.0,
@@ -301,6 +332,36 @@ fn main() {
                             size.width as f32,
                             size.height as f32,
                         ) {
+                            return;
+                        }
+                        // The layout editor captures all clicks while active.
+                        if editor.active {
+                            match editor.mouse_down(
+                                mouse.0,
+                                mouse.1,
+                                size.width as f32,
+                                size.height as f32,
+                            ) {
+                                widgets::editor::EditorHit::Save => {
+                                    // Overwrite the currently selected layout.
+                                    let name = config::effective_components()
+                                        .1
+                                        .unwrap_or_else(|| "default".to_string());
+                                    editor_save(
+                                        &mut editor,
+                                        &name,
+                                        false,
+                                        &mut theme,
+                                        &mut layout_spec,
+                                        &mut popup,
+                                    );
+                                }
+                                widgets::editor::EditorHit::SaveAs => {
+                                    editor.naming = Some(String::new());
+                                }
+                                widgets::editor::EditorHit::Cancel => editor.stop(),
+                                widgets::editor::EditorHit::Handled => {}
+                            }
                             return;
                         }
                         // An open settings window captures all clicks.
@@ -354,10 +415,30 @@ fn main() {
                                     }
                                 }
                             }
+                            // EDIT GRID: hide settings, enter the editor
+                            // with the current panel rectangles.
+                            if settings.edit_requested {
+                                settings.edit_requested = false;
+                                let (snap, cols, rows, _) = config::grid_prefs();
+                                // The editor edits the OUTER panel rects.
+                                let outer = flex::compute(
+                                    size.width as f32,
+                                    size.height as f32,
+                                    &layout_spec,
+                                );
+                                editor.start(
+                                    &outer,
+                                    size.width as f32,
+                                    size.height as f32,
+                                    snap,
+                                    cols,
+                                    rows,
+                                );
+                            }
                             return;
                         }
                         // Terminal tabs: switching / opening a new session.
-                        let tab_hit = widgets::shell::tab_rects(layout.shell, size.height as f32)
+                        let tab_hit = widgets::shell::tab_rects(layout.p(widgets::Panel::Shell), size.height as f32)
                             .iter()
                             .position(|tr| tr.contains(mouse.0, mouse.1));
                         if let Some(i) = tab_hit {
@@ -373,14 +454,14 @@ fn main() {
                                     Err(e) => eprintln!("ng-term: cannot open PTY: {e}"),
                                 }
                             }
-                        } else if layout.keyboard.contains(mouse.0, mouse.1) {
+                        } else if layout.p(widgets::Panel::Keyboard).contains(mouse.0, mouse.1) {
                             if let Some(bytes) = kb.click(mouse.0, mouse.1) {
                                 if let Some(s) = sessions[active].as_mut() {
                                     s.pty.write(&bytes);
                                     s.term.view_offset = 0;
                                 }
                             }
-                        } else if layout.filesystem.contains(mouse.0, mouse.1) {
+                        } else if layout.p(widgets::Panel::Filesystem).contains(mouse.0, mouse.1) {
                             match fsp.click(mouse.0, mouse.1) {
                                 Some(widgets::filesystem::FsEvent::OpenDir(dir)) => {
                                     // Entering a directory = cd in the active tab
@@ -404,7 +485,7 @@ fn main() {
                                 None => {}
                             }
                         } else if let Some(btn) =
-                            control.click(mouse.0, mouse.1, layout.control, size.height as f32)
+                            control.click(mouse.0, mouse.1, layout.p(widgets::Panel::Control), size.height as f32)
                         {
                             match btn {
                                 widgets::control::BTN_EXIT => {
@@ -418,6 +499,38 @@ fn main() {
                     }
                     WindowEvent::KeyboardInput { event: key_event, .. } => {
                         if key_event.state != ElementState::Pressed {
+                            return;
+                        }
+                        // Layout editor: the SAVE AS prompt takes typing;
+                        // otherwise ESC exits without saving. Nothing
+                        // reaches the terminal.
+                        if editor.active {
+                            if editor.naming.is_some() {
+                                match &key_event.logical_key {
+                                    Key::Named(NamedKey::Enter) => {
+                                        if let Some(name) = editor.naming.clone() {
+                                            if !name.is_empty() {
+                                                editor_save(
+                                                    &mut editor,
+                                                    &name,
+                                                    true,
+                                                    &mut theme,
+                                                    &mut layout_spec,
+                                                    &mut popup,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Key::Named(NamedKey::Escape) => editor.naming = None,
+                                    Key::Named(NamedKey::Backspace) => editor.backspace(),
+                                    Key::Character(s) => editor.type_char(s),
+                                    _ => {}
+                                }
+                            } else if let Key::Named(NamedKey::Escape) =
+                                key_event.logical_key
+                            {
+                                editor.stop();
+                            }
                             return;
                         }
                         // Open settings window: ESC closes, other keys
@@ -479,6 +592,10 @@ fn main() {
                             font_scale = tscale;
                             ui_font_scale = uscale;
                         }
+                        // Live widget padding while the GRID view is open.
+                        if let Some(p) = settings.live_padding() {
+                            ui_padding = p as f32;
+                        }
                         // The layout is recomputed from the window size every
                         // frame (src/flex.rs), so moving the window to another
                         // monitor or resizing it reflows the interface live.
@@ -528,50 +645,87 @@ fn main() {
 
                         let booting = widgets::boot::draw(&mut ctx);
                         if !booting {
-                            let layout = flex::compute(w, h, &layout_spec);
-                            // Portrait: MEMORY and TOP PROCESSES move out of
-                            // the telemetry column under the control panel.
-                            let portrait = h > w;
-                            if portrait {
-                                widgets::telemetry::draw_top(&mut ctx, layout.left_col, &snap);
+                            // The editor shows its edited rectangles (WYSIWYG).
+                            // Widgets draw inside the padded (content) rects;
+                            // the editor overlay shows the outer edges.
+                            let layout = if editor.active {
+                                editor.layout(w, h)
                             } else {
-                                widgets::telemetry::draw(&mut ctx, layout.left_col, &snap);
+                                flex::compute(w, h, &layout_spec)
                             }
-                            widgets::network::draw(&mut ctx, layout.right_col, &snap);
+                            .padded(ui_padding);
+                            // Telemetry widgets — each an individual panel;
+                            // their text scales with the panel width.
+                            use widgets::Panel as P;
+                            {
+                                let tele: [(P, fn(&mut widgets::Ctx, widgets::Rect, &system::Snapshot)); 5] = [
+                                    (P::Clock, widgets::clock::draw),
+                                    (P::Sysinfo, widgets::sysinfo::draw),
+                                    (P::Hardware, widgets::hardware::draw),
+                                    (P::Cpu, widgets::cpu::draw),
+                                    (P::Memory, widgets::memory::draw),
+                                ];
+                                for (panel, f) in tele {
+                                    let r = layout.p(panel);
+                                    ctx.panel_scale = ctx.panel_font_scale(&r);
+                                    f(&mut ctx, r, &snap);
+                                    ctx.panel_scale = 1.0;
+                                }
+                                let r = layout.p(P::Processes);
+                                ctx.panel_scale = ctx.panel_font_scale(&r);
+                                widgets::processes::draw(&mut ctx, r, &snap);
+                                ctx.panel_scale = 1.0;
+                            }
+                            widgets::network::draw(&mut ctx, layout.p(P::Network), &snap);
 
                             let occupied: [bool; TAB_COUNT] =
                                 std::array::from_fn(|i| sessions[i].is_some());
                             let active_term = &sessions[active].as_ref().unwrap().term;
                             let (cols, rows) = widgets::shell::draw(
                                 &mut ctx,
-                                layout.shell,
+                                layout.p(P::Shell),
                                 active_term,
                                 &occupied,
                                 active,
                             );
-                            fsp.draw(&mut ctx, layout.filesystem);
-                            kb.draw(&mut ctx, layout.keyboard);
-                            control.draw(&mut ctx, layout.control);
-                            // Portrait row: MEMORY + TOP PROCESSES fill the
-                            // column above the bottom-anchored control panel.
-                            // Only when the telemetry row is visible (the
-                            // phone control bar at the bottom is full-width).
-                            if portrait && layout.left_col.x < w {
-                                // Anchored to the row top (below the keyboard),
-                                // independent of the shifted column tops.
-                                let top = layout.keyboard.bottom() + ctx.vh(2.4);
-                                let free = layout.control.y - ctx.vh(2.4) - top;
-                                if free > ctx.vh(12.0) {
-                                    let r = widgets::Rect::new(
-                                        layout.control.x,
-                                        top,
-                                        layout.control.w,
-                                        free,
-                                    );
-                                    widgets::telemetry::draw_mem_procs(&mut ctx, r, &snap);
-                                }
-                            }
+                            fsp.draw(&mut ctx, layout.p(P::Filesystem));
+                            kb.draw(&mut ctx, layout.p(P::Keyboard));
+                            control.draw(&mut ctx, layout.p(P::Control));
                             // Settings window drawn on top.
+                            // Grid overlay + editor controls on top of the
+                            // live panels. The closure draws live widget
+                            // miniatures inside the ADD WIDGET window.
+                            if editor.active {
+                                editor.draw(&mut ctx, |ctx, panel, r| {
+                                    ctx.panel_scale = ctx.panel_font_scale(&r);
+                                    match widgets::Panel::ALL[panel] {
+                                        P::Clock => widgets::clock::draw(ctx, r, &snap),
+                                        P::Sysinfo => widgets::sysinfo::draw(ctx, r, &snap),
+                                        P::Hardware => {
+                                            widgets::hardware::draw(ctx, r, &snap)
+                                        }
+                                        P::Cpu => widgets::cpu::draw(ctx, r, &snap),
+                                        P::Memory => widgets::memory::draw(ctx, r, &snap),
+                                        P::Processes => {
+                                            widgets::processes::draw(ctx, r, &snap)
+                                        }
+                                        P::Shell => {
+                                            let _ = widgets::shell::draw(
+                                                ctx,
+                                                r,
+                                                active_term,
+                                                &occupied,
+                                                active,
+                                            );
+                                        }
+                                        P::Network => widgets::network::draw(ctx, r, &snap),
+                                        P::Filesystem => fsp.draw(ctx, r),
+                                        P::Keyboard => kb.draw(ctx, r),
+                                        P::Control => control.draw(ctx, r),
+                                    }
+                                    ctx.panel_scale = 1.0;
+                                });
+                            }
                             settings.draw(&mut ctx);
                             // Warning popup on the very top.
                             popup.draw(&mut ctx);
@@ -609,6 +763,39 @@ fn main() {
             }
         })
         .expect("event loop ended with an error");
+}
+
+/// Saves the layout edited in the grid editor and applies it live.
+/// `select` = also make it the selected layout (SAVE AS); a plain SAVE
+/// keeps the current selection, whose file was just overwritten.
+fn editor_save(
+    editor: &mut widgets::editor::Editor,
+    name: &str,
+    select: bool,
+    theme: &mut theme::Theme,
+    layout_spec: &mut widgets::LayoutMode,
+    popup: &mut widgets::popup::Popup,
+) {
+    if name.is_empty() {
+        return;
+    }
+    if let Err(e) = config::save_layaut_file(name, &editor.spec()) {
+        popup.show(format!("Cannot save layout '{name}': {e}"));
+        return;
+    }
+    if select
+        || (config::current_theme_name().is_none()
+            && config::current_layaut_name().is_none())
+    {
+        config::select_layaut(name);
+    }
+    let (new_cfg, warn) = config::resolve();
+    *theme = new_cfg.theme;
+    *layout_spec = new_cfg.layout;
+    if let Some(w) = warn {
+        popup.show(w);
+    }
+    editor.stop();
 }
 
 /// A small dialog window shown INSTEAD of the program when the monitor

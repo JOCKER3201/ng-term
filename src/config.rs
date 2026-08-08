@@ -24,7 +24,8 @@
 //!   gap = 2.5           # vertical gap between panels (weight units)
 //!   panel = left_col 59.5   # panels top->bottom with height weights
 //!   panel = control 32.5
-//! Panels: left_col, shell, right_col, filesystem, keyboard, control.
+//! Panels: clock, sysinfo, hardware, cpu, memory, processes, shell,
+//! network, filesystem, keyboard, control.
 //!
 //! Legacy — "<panel> = x y w h" percentages at the 16:9 reference,
 //! re-adapted to the window continuously (edge-anchored transform on
@@ -509,6 +510,79 @@ pub fn set_layaut_option(name: &str) {
     set_conf_kv("Layaut", name);
 }
 
+/// Grid editor preferences: (snap to grid, columns, rows, widget padding px).
+pub fn grid_prefs() -> (bool, u32, u32, u32) {
+    let kv = conf_kv();
+    let num = |key: &str, def: u32| {
+        kv.get(key)
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(def)
+            .clamp(2, 64)
+    };
+    // Snap is opt-in (off by default).
+    let snap = kv
+        .get("GridSnap")
+        .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let pad = kv
+        .get("GridPadding")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(8)
+        .min(40);
+    (snap, num("GridCols", 12), num("GridRows", 8), pad)
+}
+
+pub fn set_grid_snap(on: bool) {
+    set_conf_kv("GridSnap", if on { "1" } else { "0" });
+}
+
+pub fn set_grid_cols(n: u32) {
+    set_conf_kv("GridCols", &n.to_string());
+}
+
+pub fn set_grid_rows(n: u32) {
+    set_conf_kv("GridRows", &n.to_string());
+}
+
+pub fn set_grid_padding(n: u32) {
+    set_conf_kv("GridPadding", &n.to_string());
+}
+
+/// Selects a layout by name, with the standard component rules (the
+/// missing style falls back to "default", Look= is cleared and the pair
+/// is canonicalized back to a look when it matches one).
+pub fn select_layaut(name: &str) {
+    set_layaut_option(name);
+    if current_style_name().is_none() {
+        set_style_option("default");
+    }
+    clear_look_option();
+    canonicalize_components();
+}
+
+/// Writes a layout edited in the grid editor to themes/layauts/<name>.layaut
+/// (the fixed percent format; panels hidden in the editor stay off-screen).
+pub fn save_layaut_file(name: &str, spec: &LayoutSpec) -> std::io::Result<()> {
+    let mut text = String::from(
+        "# ng-term layout saved from the grid editor.\n\
+         # Format: <panel> = x y w h (percent of the window, 16:9 reference).\n",
+    );
+    for panel in Panel::ALL {
+        let ps = spec.p(panel);
+        text.push_str(&format!(
+            "{} = {:.2} {:.2} {:.2} {:.2}\n",
+            panel.name(),
+            ps.x,
+            ps.y,
+            ps.w,
+            ps.h
+        ));
+    }
+    let dir = layauts_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(format!("{name}.layaut")), text)
+}
+
 /// Sets Key=Value in ng-term.conf, preserving the rest of the file.
 fn set_conf_kv(key: &str, value: &str) {
     let path = config_dir().join("ng-term.conf");
@@ -852,14 +926,9 @@ fn parse_layaut(src: &str) -> LayoutSpec {
             w: nums[2],
             h: nums[3],
         };
-        match k.trim() {
-            "left_col" => spec.left_col = p,
-            "shell" => spec.shell = p,
-            "right_col" => spec.right_col = p,
-            "filesystem" => spec.filesystem = p,
-            "keyboard" => spec.keyboard = p,
-            "control" => spec.control = p,
-            other => eprintln!("ng-term: unknown panel in .layaut: {other}"),
+        match Panel::from_name(k.trim()) {
+            Some(panel) => spec.set(panel, p),
+            None => eprintln!("ng-term: unknown panel in .layaut: {}", k.trim()),
         }
     }
     spec
