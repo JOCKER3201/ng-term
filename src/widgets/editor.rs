@@ -14,7 +14,6 @@
 
 use super::{Ctx, Layout, LayoutSpec, Panel, PanelSpec, Rect, OFF_SPEC, PANEL_COUNT};
 use crate::font::FONT_UI;
-use crate::theme::Color;
 use std::time::Instant;
 
 /// Edge-grab margin in px (resize handles).
@@ -435,35 +434,13 @@ impl Editor {
         }
     }
 
-    /// Opaque parallelogram button used by the editor UI.
-    #[allow(clippy::too_many_arguments)]
+    /// Opaque parallelogram button (ng_object).
     fn draw_button(ctx: &mut Ctx, br: &Rect, label: &str, hover: bool, flash: bool) {
-        let base = ctx.theme.base;
-        let skew = br.h * 0.7;
-        let quad = [
-            [br.x + skew, br.y],
-            [br.right(), br.y],
-            [br.right() - skew, br.bottom()],
-            [br.x, br.bottom()],
-        ];
-        // Solid background first, highlight overlay on top — the button
-        // is never transparent over the panels behind it.
-        ctx.dl.quad(quad, ctx.theme.bg);
-        if hover || flash {
-            ctx.dl.quad(quad, base.alpha(if flash { 0.35 } else { 0.22 }));
-        }
-        ctx.dl
-            .polyline(&quad, 1.0, base.alpha(if hover || flash { 0.8 } else { 0.4 }), true);
-        let px = ctx.font_px(1.0);
-        ctx.dl.text_center(
-            ctx.fonts,
-            FONT_UI,
-            px,
-            br.cx(),
-            br.y + (br.h - px * 1.3) / 2.0,
+        ng_object::button::draw(
+            ctx,
+            *br,
             label,
-            if hover || flash { base } else { base.alpha(0.7) },
-            px * 0.1,
+            ng_object::button::ButtonState { hover, flash, selected: false },
         );
     }
 
@@ -661,18 +638,8 @@ impl Editor {
         // ADD WIDGET list window (opaque).
         if self.add_open {
             let (win, items) = self.add_list_rects(w, h);
-            ctx.dl
-                .rect(0.0, 0.0, w, h, Color::rgb8(0, 0, 0).alpha(0.4));
-            ctx.dl.rect(win.x, win.y, win.w, win.h, ctx.theme.bg);
-            ctx.dl.chamfer_frame(
-                win.x,
-                win.y,
-                win.w,
-                win.h,
-                ctx.vh(0.9),
-                ctx.vh(0.18).max(1.5),
-                base.alpha(0.8),
-            );
+            ng_object::window::backdrop(ctx, 0.4);
+            ng_object::window::frame(ctx, win);
             let tpx = ctx.font_px(0.95);
             ctx.dl.text_center(
                 ctx.fonts,
@@ -754,22 +721,12 @@ impl Editor {
 
         // SAVE AS name prompt.
         if let Some(name) = self.naming.clone() {
-            ctx.dl
-                .rect(0.0, 0.0, w, h, Color::rgb8(0, 0, 0).alpha(0.55));
+            ng_object::window::backdrop(ctx, 0.55);
             let bw = (w * 0.4).max(320.0);
             let bh = (h * 0.16).max(110.0);
             let bx = (w - bw) / 2.0;
             let by = (h - bh) / 2.0;
-            ctx.dl.rect(bx, by, bw, bh, ctx.theme.bg);
-            ctx.dl.chamfer_frame(
-                bx,
-                by,
-                bw,
-                bh,
-                ctx.vh(0.9),
-                ctx.vh(0.18).max(1.5),
-                base.alpha(0.8),
-            );
+            ng_object::window::frame(ctx, Rect::new(bx, by, bw, bh));
             let tpx = ctx.font_px(1.0);
             ctx.dl.text_center(
                 ctx.fonts,

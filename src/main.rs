@@ -7,13 +7,13 @@ mod gfx;
 mod pty;
 mod shaders;
 mod system;
-mod term;
 mod widgets;
 
-// The widget framework (drawing, fonts, themes, layout engine) lives in
-// the external lib-ng-widgets crate; re-export its modules under crate::
-// so the rest of the code links against them like before.
-pub use ng_widgets::{draw, flex, font, theme};
+// The platform-independent base (drawing, fonts, themes, layout engine,
+// terminal emulation) lives in the external lib-ng-base crate; re-export
+// its modules under crate:: so the rest of the code links against them
+// like before. This tree keeps only the Linux-specific parts.
+pub use ng_base::{draw, flex, font, term, theme};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;

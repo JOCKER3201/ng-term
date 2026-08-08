@@ -7,10 +7,17 @@ description = "Independent sci-fi terminal inspired by eDEX-UI — Rust + Vulkan
 license = "MIT"
 
 [dependencies]
-# Widget framework: drawing, fonts, themes, responsive layout engine
+# Platform-independent base: drawing, fonts, themes, layout engine,
+# terminal emulation, telemetry data model
+lib-ng-base = { git = "https://github.com/JOCKER3201/lib-ng-base" }
+
+# Interface objects: windows, dialogs, buttons, sliders, dropdowns, checkboxes
+lib-ng-object = { git = "https://github.com/JOCKER3201/lib-ng-object" }
+
+# The widgets themselves
 lib-ng-widgets = { git = "https://github.com/JOCKER3201/lib-ng-widgets" }
 
-# Window + events
+# Window + events (Linux: Wayland/X11 backends)
 winit = "0.29"
 raw-window-handle = "0.6"
 
@@ -21,14 +28,13 @@ ash-window = "0.13"
 # WGSL -> SPIR-V compilation at startup (pure Rust, no glslc/shaderc)
 naga = { version = "0.19", features = ["wgsl-in", "spv-out"] }
 
-# ANSI/VT sequence parser
+# PTY events use the same VT parser as the emulation in lib-ng-base
 vte = "0.13"
-unicode-width = "0.1"
 
-# System information (CPU, RAM, processes, network)
+# System information collectors (CPU, RAM, processes, network)
 sysinfo = "0.30"
 
-# PTY / fork / exec
+# PTY / fork / exec (Linux)
 libc = "0.2"
 
 # Clock / date

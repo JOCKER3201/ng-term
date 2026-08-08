@@ -6,7 +6,6 @@
 use super::{Ctx, Rect};
 use crate::config::{self, ThemeInfo};
 use crate::font::FONT_UI;
-use crate::theme::Color;
 use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -427,14 +426,10 @@ impl Settings {
         self.hits.clear();
         let base = ctx.theme.base;
 
-        // Dim the background behind the window.
-        ctx.dl
-            .rect(0.0, 0.0, ctx.w, ctx.h, Color::rgb8(0, 0, 0).alpha(0.55));
-
+        // Dim the background and draw the window frame (ng_object).
+        ng_object::window::backdrop(ctx, 0.55);
         let m = modal_rect(ctx.w, ctx.h);
-        ctx.dl.rect(m.x, m.y, m.w, m.h, ctx.theme.bg);
-        ctx.dl
-            .chamfer_frame(m.x, m.y, m.w, m.h, ctx.vh(1.1), ctx.vh(0.18).max(1.5), base.alpha(0.7));
+        ng_object::window::frame(ctx, m);
 
         let pad = ctx.vh(1.4);
         let title_px = ctx.font_px(1.02);
@@ -552,34 +547,10 @@ impl Settings {
         let px = ctx.font_px(1.0);
         let mut y = content.y + btn_h + gap * 2.0;
 
-        // SNAP TO GRID checkbox (the whole row toggles).
+        // SNAP TO GRID checkbox (ng_object; the whole row toggles).
         let row = Rect::new(content.x, y, content.w, btn_h);
         let hover = row.contains(ctx.mouse.0, ctx.mouse.1);
-        let bx_s = btn_h * 0.55;
-        let bx_r = Rect::new(row.x, row.y + (btn_h - bx_s) / 2.0, bx_s, bx_s);
-        ctx.dl.rect_outline(
-            bx_r.x,
-            bx_r.y,
-            bx_r.w,
-            bx_r.h,
-            1.5,
-            base.alpha(if hover { 0.9 } else { 0.5 }),
-        );
-        if self.grid_snap {
-            let m = bx_s * 0.22;
-            ctx.dl
-                .rect(bx_r.x + m, bx_r.y + m, bx_s - 2.0 * m, bx_s - 2.0 * m, base);
-        }
-        ctx.dl.text(
-            ctx.fonts,
-            FONT_UI,
-            px,
-            bx_r.right() + px * 0.8,
-            row.y + (btn_h - px * 1.3) / 2.0,
-            "SNAP TO GRID",
-            if hover { base } else { base.alpha(0.75) },
-            px * 0.1,
-        );
+        ng_object::checkbox::draw(ctx, row, "SNAP TO GRID", self.grid_snap, hover);
         self.hits.push((row, Act::ToggleSnap));
         y += btn_h + gap;
 
@@ -632,13 +603,8 @@ impl Settings {
         let value_w = ctx.fonts.measure(FONT_UI, px, "40 PX", px * 0.05) + px;
         let track = Rect::new(content.x + label_w, y, content.w - label_w - value_w, btn_h);
         self.pad_rect = track;
-        let cy = y + btn_h / 2.0;
-        ctx.dl.line(track.x, cy, track.right(), cy, 2.0, base.alpha(0.3));
         let t = (self.grid_pad as f32 / 40.0).clamp(0.0, 1.0);
-        let knob_x = track.x + t * track.w;
-        ctx.dl.line(track.x, cy, knob_x, cy, 2.0, base);
-        let ks = btn_h * 0.28;
-        ctx.dl.rect(knob_x - ks / 2.0, cy - ks, ks, ks * 2.0, base);
+        ng_object::slider::track(ctx, track, t);
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
@@ -761,14 +727,9 @@ impl Settings {
         let value_w = ctx.fonts.measure(FONT_UI, px, "200%", px * 0.05) + px;
         let track = Rect::new(row_x + label_w, size_y, row_w - label_w - value_w, btn_h);
         self.slider_rect[si] = track;
-        let cy = track.y + track.h / 2.0;
-        ctx.dl.line(track.x, cy, track.right(), cy, 2.0, base.alpha(0.3));
         let (rmin, rmax) = Self::size_range(sect);
         let t = ((self.cur_size[si] as f32 - rmin) / (rmax - rmin)).clamp(0.0, 1.0);
-        let knob_x = track.x + t * track.w;
-        ctx.dl.line(track.x, cy, knob_x, cy, 2.0, base);
-        let ks = track.h * 0.28;
-        ctx.dl.rect(knob_x - ks / 2.0, cy - ks, ks, ks * 2.0, base);
+        ng_object::slider::track(ctx, track, t);
         ctx.dl.text_right(
             ctx.fonts,
             FONT_UI,
@@ -810,49 +771,16 @@ impl Settings {
         names: &[String],
         make_act: F,
     ) {
-        let base = ctx.theme.base;
-        let px = ctx.font_px(0.95);
         // Accordion animation: the list unfolds from the anchor's edge.
         let t = self
             .dropdown_since
             .map(|s| (s.elapsed().as_secs_f32() / 0.15).clamp(0.0, 1.0))
             .unwrap_or(1.0);
         let p = 1.0 - (1.0 - t) * (1.0 - t); // ease-out
-        let visible_h = p * item_h * names.len() as f32;
-        for (i, name) in names.iter().enumerate() {
-            let top = item_h * i as f32;
-            if top >= visible_h {
-                break;
-            }
-            // The edge closest to the anchor coincides with the anchor's
-            // bottom edge and the list is exactly as wide as that edge
-            // (the button is a parallelogram — its bottom edge is shorter
-            // by the skew).
-            let skew = anchor.h * 0.7;
-            let h = (visible_h - top).min(item_h);
-            let r = Rect::new(anchor.x, anchor.bottom() + top, anchor.w - skew, h);
-            // Floating-point tolerance: the LAST item's height comes from a
-            // subtraction and can be epsilon short of item_h.
-            let full = h >= item_h - 0.5;
-            let hover = full && r.contains(ctx.mouse.0, ctx.mouse.1);
-            // Opaque background first, hover overlay on top of it.
-            ctx.dl.rect(r.x, r.y, r.w, r.h, ctx.theme.bg);
-            if hover {
-                ctx.dl.rect(r.x, r.y, r.w, r.h, base.alpha(0.25));
-            }
-            ctx.dl.rect_outline(r.x, r.y, r.w, r.h, 1.0, base.alpha(0.4));
-            if h >= item_h * 0.7 {
-                ctx.dl.text_center(
-                    ctx.fonts,
-                    FONT_UI,
-                    px,
-                    r.cx(),
-                    r.y + (h - px * 1.3) / 2.0,
-                    name,
-                    if hover { base } else { base.alpha(0.8) },
-                    px * 0.05,
-                );
-            }
+        for (i, (r, _full)) in ng_object::dropdown::accordion(ctx, anchor, item_h, names, p)
+            .into_iter()
+            .enumerate()
+        {
             self.hits.push((r, make_act(i)));
         }
     }
@@ -945,30 +873,14 @@ impl Settings {
             }
             _ => false,
         };
-        let fill = if flash {
-            base.alpha(0.35)
-        } else if hover {
-            base.alpha(0.22)
-        } else if is_current {
-            base.alpha(0.12)
-        } else {
-            ctx.theme.bg
-        };
-        let skew = r.h * 0.7;
-        let pts = [
-            [r.x + skew, r.y],
-            [r.right(), r.y],
-            [r.right() - skew, r.bottom()],
-            [r.x, r.bottom()],
-        ];
-        ctx.dl.quad(pts, fill);
-        ctx.dl
-            .polyline(&pts, 1.0, base.alpha(if hover || flash { 0.8 } else { 0.4 }), true);
-
-        let px = ctx.font_px(1.0);
-        let color = if hover || flash || is_current { base } else { base.alpha(0.7) };
-        // Left arrow on the back button.
+        let st = ng_object::button::ButtonState { hover, flash, selected: is_current };
         if act == Act::Back {
+            // The base button (ng_object) plus a left arrow and a label
+            // shifted to make room for it.
+            ng_object::button::draw(ctx, r, "", st);
+            let px = ctx.font_px(1.0);
+            let color = if hover || flash || is_current { base } else { base.alpha(0.7) };
+            let skew = r.h * 0.7;
             let s = (r.h * 0.14).max(4.0);
             let ax = r.x + skew * 0.8 + s;
             let cy = r.y + r.h / 2.0;
@@ -985,16 +897,7 @@ impl Settings {
                 px * 0.1,
             );
         } else {
-            ctx.dl.text_center(
-                ctx.fonts,
-                FONT_UI,
-                px,
-                r.cx(),
-                r.y + (r.h - px * 1.3) / 2.0,
-                label,
-                color,
-                px * 0.1,
-            );
+            ng_object::button::draw(ctx, r, label, st);
         }
         self.hits.push((r, act));
     }
